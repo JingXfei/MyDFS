@@ -59,6 +59,7 @@ class Client:
         fp.close()
 
     def sscopyFromLocal(self, local_path, dfs_path):
+        # python3 client.py -sscopyFromLocal little_data/ /test/test.txt
         file_size = 64*1024
     
         request = "new_fat_item {} {}".format(dfs_path, file_size)
@@ -79,18 +80,19 @@ class Client:
             sstable.sort_values(by=['key'], inplace=True, ascending=True)
             return sstable
 
-        # 一个sstable为64k，一行是不超过1k的数据,所以存储了64行数据(如果是100M,用100M/1k作为行数),一行里面放行键值和内容
+        # 一个sstable(data_pd)为64k，一行是不超过1k的数据,所以存储了64行数据(如果是100M,用100M/1k作为行数)
+        # 一行里面放行键值和内容
         # 生成sstable并进行编码,key目前是文件名
         
-        # tablet存放：1、sstable的索引 2、sstable的地址 3、sstable中的最后一行行键值，
+        # tablet(ss_pd)存放：1、sstable的索引 2、sstable的地址 3、sstable中的最后一行行键值，
         # 当tablet存放到4k截止
         # 默认一行内容不超过100Bytes,可以存40行
         
-        # root meta 存储各个tablet表存放的位置
+        # root meta(tablet_pd)存储1、tablet的索引 2、tablet的地址 3、tablet中的最后一行行键值，
         
         data_pd = pd.DataFrame(columns=['key', 'content'])
         ss_pd = pd.DataFrame(columns=['ss_index', 'host_name', 'last_key'])
-        tablet_pd = pd.DataFrame(columns=['tablet_index', 'host_name'])
+        tablet_pd = pd.DataFrame(columns=['tablet_index', 'host_name','last_key'])
 
         pd_index = 0
         sstable_index = 0
@@ -126,7 +128,7 @@ class Client:
                         fp.close()
                         
                         #往tablet表中增加一行
-                        last_key=sstable['key'][0]
+                        last_key=sstable['key'][len(sstable)-1]
                         ss_pd.loc[sstable_index] = [sstable_index,host_name, last_key]
 
                         #重新开启下一个sstable的存储
@@ -135,7 +137,6 @@ class Client:
                         
                     if sstable_index == 40:
                         #一个tablet满了，要发出去
-
                         ##存到root_meta_table中（存放tablet的地址）
                         host_name = host_list[np.random.choice(len(host_list), dfs_replication, replace=False)]
                         blk_path = dfs_path + ".tablet{}".format(tablet_index)
@@ -147,8 +148,8 @@ class Client:
                         #发送到各个服务器上
                         print(self.sendToHosts(host_name, blk_path, length_data, fp1))
                         fp1.close()
-
-                        tablet_pd.loc[tablet_index] = [tablet_index, host_name]
+                        last_key=ss_pd['last_key'][len(ss_pd)-1]
+                        tablet_pd.loc[tablet_index] = [tablet_index, host_name,last_key]
                         sstable_index = 0
                         tablet_index += 1
                         
@@ -242,7 +243,7 @@ class Client:
                     print(host+" error!")
                     continue
         fp.close()
-    
+        
     def rm(self, dfs_path):
         request = "rm_fat_item {}".format(dfs_path)
         print("Request: {}".format(request))
@@ -361,7 +362,8 @@ elif cmd=="-sscopyFromLocal":
         dfs_path = argv[3]
         client.sscopyFromLocal(local_path, dfs_path)
     else:
-        print("Usage: python client.py -copyFromLocal <local_path> <dfs_path>")
+        print("Usage: python client.py -sscopyFromLocal <local_path> <dfs_path>")
+
 else:
     print("Undefined command: {}".format(cmd))
     print("Usage: python client.py <-ls | -copyFromLocal | -copyToLocal | -rm | -format> other_arguments")
