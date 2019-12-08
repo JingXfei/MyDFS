@@ -142,9 +142,11 @@ class Client:
                         
                         ss_pd.to_csv('test_size.csv',index=False)
                         length_data=os.path.getsize('test_size.csv')
+                        fp1=open('test_size.csv')
                         
                         #发送到各个服务器上
-                        print(self.sendToHosts(host_name, blk_path, length_data, ss_pd))
+                        print(self.sendToHosts(host_name, blk_path, length_data, fp1))
+                        fp1.close()
 
                         tablet_pd.loc[tablet_index] = [tablet_index, host_name]
                         sstable_index = 0
@@ -152,13 +154,16 @@ class Client:
                         
         #按照FAT表发送root_meta_tablet表
         for idx, row in fat.iterrows():
-            length_data = int(row['blk_size'])
             # 解析host地址
+            tablet_pd.to_csv('test_size.csv',index=False)
+            length_data = os.path.getsize('test_size.csv')
+            fp2=open('test_size.csv')
             host_str = row['host_name']
             host_names = get_hosts(host_str)
             blk_path = dfs_path + ".root_tablet{}".format(row['blk_no'])
-            print(self.sendToHosts(host_names, blk_path, length_data, tablet_pd))
-        
+            print(self.sendToHosts(host_names, blk_path, length_data, fp2))
+            fp2.close()
+            
     def sendToHosts(self, host_names, blk_path, length_data, fp):
         host_str = str(host_names).replace(' ', '')
         for host in host_names:
