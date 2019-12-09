@@ -140,12 +140,8 @@ class Client:
 
         for tabindex in range (tablet_total_num):
             tablet = pd.DataFrame(columns=['ss_index', 'host_name', 'last_key'])
-            if not flag:
-                break
             for ssindex in range (40):
                 sstable = pd.DataFrame(columns=['key', 'content'])
-                if not flag:
-                    break
                 for data_index in range (63):
                     #往sstable里填充内容
                     file_index=40*63*tabindex+63*ssindex+data_index
@@ -155,7 +151,8 @@ class Client:
                         break
                     file_content=get_content(little_file_path)
                     sstable.loc[data_index]=[str(little_file_path),file_content]
-                
+                if not flag:
+                    break
                 #如果有上一个sstable，往上一个的最后一行存放当前sstable的地址，并将上一个sstable传出去1
                 if 'host_name' in locals().keys()  and 'blk_path' in locals().keys() :
                     host_name0=host_name
@@ -167,11 +164,11 @@ class Client:
     
                 # 存储到tablet
                 last_key=sstable['key'][len(sstable)-1]
-                tablet.loc[ssindex] = [ssindex,host_name,last_key]
+                tablet.loc[ssindex] = [40*tabindex+ssindex,host_name,last_key]
                 # 如果有上一个sstable，往上一个的最后一行存放当前sstable的地址，并将上一个sstable传出去2
                 if 'host_name0' in locals().keys() and 'blk_path0' in locals().keys():
                     send_sstable = pd.read_csv('ss.csv')
-                    send_sstable.loc[len(send_sstable)] = [ssindex, host_name]
+                    send_sstable.loc[len(send_sstable)] = [40*tabindex+ssindex, host_name]
                     send_sstable.to_csv('ss.csv', index=False)
                     length_data = os.path.getsize('ss.csv')
                     fp = open('ss.csv')
@@ -180,7 +177,9 @@ class Client:
 
                 # 将当前的sstable存放到ss.csv中(一个临时文件，不断被覆盖的)
                 sstable.to_csv('ss.csv', index=False)
-        
+            if not flag:
+                break
+
             # 当tablet存满到40行,发出去并存储到root
             blk_path_tablet = dfs_path + ".tablet{}.csv".format(tabindex)
             tablet.to_csv('tablet.csv',index=False)
