@@ -91,7 +91,6 @@ class DataNode:
                 length_data = int(request[4])
                 hosts_next_str = request[5]
                 response = self.map(job_id, mapper_id, blk_path, length_data, hosts_next_str)
-
             elif cmd == "reduce":
                 # job_id, reducer_id, mapper_id, mapper_hosts
                 job_id = request[1]
@@ -99,12 +98,31 @@ class DataNode:
                 mapper_id = request[3]
                 mapper_hosts = request[4]
                 response = self.reduce(job_id, reducer_id, mapper_id, mapper_hosts)
-
             elif cmd == "get":
                 blk_path = request[1]
                 read_model = request[2]
                 size = int(request[3])
                 response = self.get(sock_fd, blk_path, read_model, size)
+            elif cmd == "query":
+                # table_path, cur_layer, row_key
+                table_path = request[1]
+                cur_layer = int(request[2])
+                row_key = request[3]
+                response = self.query(table_path, cur_layer, row_key)
+            elif cmd == "bloomFilter":
+                # table_path, index_1, index_2
+                table_path = request[1]
+                index_1 = int(request[2])
+                index_2 = int(request[3])
+                response = self.bloomFilter(table_path, index_1, index_2)
+            elif cmd == "queryArea":
+                # table_path, row_key_begin, row_key_end
+                table_path = request[1]
+                row_key_begin = request[2]
+                row_key_end = request[3]
+                response = self.queryArea(sock_fd, table_path, row_key_begin, row_key_end)
+            elif cmd == "insert":
+                pass
             else:
                 response = "Undefined command: " + " ".join(request)
             
@@ -388,6 +406,83 @@ class DataNode:
             sock_fd.sendall(temp) # temp本身是一个byte类型
         time.sleep(0.2)
         return ''
+
+    def query(self, table_path, cur_layer, row_key):
+        # sstable的最后一行是索引，所以要注意排除
+        # 找到则返回，未找到返回大于他的第一个
+        local_path = data_node_dir + table_path
+        flag = 0
+        if cur_layer != 2:
+            # 要查讯对应的row_key在哪一行下；
+            tablet = pd.read_csv(local_path)
+            for ind, row in tablet.iterrows():
+                if row_key <= row['last_key']:
+                    result = tablet.iloc[[ind]]
+                    flag = 1
+                    break
+                else:
+                    continue
+            if flag == 0:
+                # 大于树中存储数据的最大值；
+                result = "None"
+            return result
+        else:
+            sstable = pd.read_csv(local_path)
+            temp = sstable[sstable.key >= row_key]
+            result = temp.iloc[[0]]
+        return result
+    
+    def bloomFilter(self, table_path, index_1, index_2):
+        # 必然查询的是.bloom_filter文件，该文件格式需要确定；
+        local_path = data_node_dir + table_path
+        file_size = os.path.getsize(local_path)
+        with open(local_path) as f:
+            data = pkl.load(f)
+        if data[0][index_1] == 1 and data[1][index_2] == 1:
+            return "Ok"
+        else:
+            return "None"
+
+    def queryArea(self, sock_fd, table_path, row_key_begin, row_key_end):
+        # 必然查询的是sstable，
+        local_path = data_node_dir + table_path
+        sstable = pd.read_csv(local_path)
+        data = sstable.iloc[:-1]
+        next_sstable = sstable.iloc[-1:]
+        if row_key_end == "None":
+            # 按ls的方式查询；
+            l = len(row_key_begin)
+            index = []
+            for idx, row in data.iterrows():
+                if len(row['key'])>= l and row['key'][:l] == row_key_begin:
+                    index.append(idx)
+            result = data.iloc[index]
+        else:
+            result = data[data.key >= row_key_begin]
+            result = result[result.key <= row_key_end]
+
+        # 循环发送数据；
+        str_to_send = result.to_csv(index=False)
+        length_data = len(str_to_send)
+        sock_fd.send(bytes(str(length_data), encoding='utf-8'))
+        time.sleep(0.2)
+        loop = math.ceil(length_data/PIECE_SIZE)
+        surplus = length_data
+        for i in range(loop):
+            surplus = length_data - i*PIECE_SIZE
+            if surplus >= PIECE_SIZE:
+                str_piece = str_to_send[i*PIECE_SIZE:(i+1)*PIECE_SIZE]
+            else:
+                str_piece = str_to_send[i*PIECE_SIZE:]
+            sock_fd.sendall(bytes(str_piece, encoding='utf-8'))
+        time.sleep(0.2)
+
+        # 判断是否需要读下一个sstable
+        next_judge = pd.DataFrame()
+        if result.shape[0] > 0:
+            if result.iloc[-1]['key'] == data.iloc[-1]['key']:
+                next_judge = next_sstable
+        return next_judge
 
 # 创建DataNode对象并启动
 data_node = DataNode()
