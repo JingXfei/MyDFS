@@ -25,7 +25,7 @@ BUF_SIZE = dfs_blk_size * 2
 # 心跳频率
 heart_T = 5
 # 最大无心跳计数
-heart_max_count = 10 # 50s
+heart_max_count = 50 # 50s
 rebuild_max_count = 3
 
 def get_hosts(host_str):
