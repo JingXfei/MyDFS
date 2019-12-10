@@ -235,7 +235,7 @@ class Client:
             
             # 将最后的sstable存入到tablet表中
             tablet.loc[len(tablet)] = [sstable_num,host_name_re,last_key]
-            root.loc[len(root)]=[tablet_total_num,'aitat',last_key]
+            root.loc[len(root)]=[tablet_total_num,host_name_tr,last_key]
             #发送最后的root和tablet
             tablet.to_csv('tabletend.csv',index=False)
             root.to_csv('root.csv',index=False)
