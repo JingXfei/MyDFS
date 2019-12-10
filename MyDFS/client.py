@@ -236,19 +236,21 @@ class Client:
             
             # 将最后的sstable存入到tablet表中
             tablet.loc[len(tablet)] = [ss_total_num-1,host_name_re,last_key]
-            root.loc[len(root)]=[tablet_total_num-1,'aitat',last_key]
+            root.loc[len(root)]=[tablet_total_num-1,host_name_re,last_key]
             #发送最后的root和tablet
             tablet.to_csv('tabletend.csv',index=False)
             root.to_csv('root.csv',index=False)
             blk_path_tr = dfs_path + ".tablet{}.csv".format(tablet_total_num-1)
-            blk_path_fr = dfs_path + ".root{}.csv".format(0)
             fpt=open('tabletend.csv')
-            fpr=open('root.csv')
             length_data_fpt=os.path.getsize('tabletend.csv')
-            length_data_fpr=os.path.getsize('root.csv')
             print(self.sendToHosts(host_name_tr, blk_path_tr, length_data_fpt, fpt))
+            fpt.close()
+            
+            blk_path_fr = dfs_path + ".root{}.csv".format(0)
+            fpr=open('root.csv')
+            length_data_fpr=os.path.getsize('root.csv')
             print(self.sendToHosts(host_name_tr, blk_path_fr, length_data_fpr, fpr))
-
+            fpr.close()
     def sendToHosts(self, host_names, blk_path, length_data, fp):
         host_str = str(host_names).replace(' ', '')
         for host in host_names:
