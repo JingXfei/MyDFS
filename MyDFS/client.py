@@ -393,9 +393,9 @@ class Client:
         # 否则是查询local_path_1目录下的值；
         # 这里可以进行处理，比如查询目录时，查到哪里结束也是需要以row_key的形式进行表述的。
         # 首先反复调用query_table查到第一个；再基于叶节点之间的链式索引关系进行后续遍历。
-        row_key = rowkey_encode(local_path_1)
+        row_key = rowkey_encode(local_path_1) # Undefined func
         if local_path_2 != "None":
-            row_key_2 = rowkey_encode(local_path_2)
+            row_key_2 = rowkey_encode(local_path_2) # Undefined func
         else:
             row_key_2 = "None"
         path = []
@@ -445,7 +445,7 @@ class Client:
         #    [key, content] 最终的内容和行键
         #   ] # 若查询成功，则返回对应row_key的，否则返回大于该row_key的第一个的。
 
-        row_key = rowkey_encode(local_path)
+        row_key = rowkey_encode(local_path) # Undefined func
         path = []
 
         # 调用getFatItem函数得到Fat表；并处理fat表不存在的情况
@@ -499,8 +499,8 @@ class Client:
 
     def bloomFilter(self, fat, dfs_path, row_key):
         # 依据要查询的row_key生成两个index，传入bloomfilter所在位置进行校验；
-        index_1 = hash1(row_key)
-        index_2 = hash2(row_key)
+        index_1 = hash1(row_key)  # Undefined func
+        index_2 = hash2(row_key)  # Undefined func
 
         end = '.bloom_filter'
 
@@ -543,15 +543,20 @@ class Client:
         row = cur_table.iloc[0]
         host_str = row['host_name']
         host_names = get_hosts(host_str)
+
+        # 传输查询的table的路径、在B+树中的层数、行键
+        table_path = dfs_path + end + "{}".format(row[ind_col])
+        request = "query {} {} {}".format(table_path, cur_layer, row_key)
+        ################################################################
+        res = self.queryMaster(request)
+        ################################################################
         for host in host_names:
             try:
                 time.sleep(0.2)
                 data_node_sock = socket.socket()
                 print("get table from "+host+"...",end='')
                 data_node_sock.connect((host, data_node_port))
-                table_path = dfs_path + end + "{}".format(row[ind_col])
-                # 传输查询的table的路径、在B+树中的层数、行键
-                request = "query {} {} {}".format(table_path, cur_layer, row_key)
+
                 data_node_sock.send(bytes(request, encoding='utf-8'))
                 time.sleep(0.2)  # 两次传输需要间隔一段时间，避免粘包
                 table = data_node_sock.recv(BUF_SIZE)
@@ -572,26 +577,29 @@ class Client:
         row = cur_table.iloc[0]
         host_str = row['host_name']
         host_names = get_hosts(host_str)
+
+        # 传输查询的table的路径、开始行键、结束行键
+        table_path = dfs_path + ".sstable{}".format(row['ss_index'])
+        request = "queryArea {} {} {}".format(table_path, row_key_begin, row_key_end)
+        ################################################################
+        res = self.queryMaster(request)
+        ################################################################
         for host in host_names:
             try:
                 time.sleep(0.2)
                 data_node_sock = socket.socket()
                 print("get table from "+host+"...",end='')
                 data_node_sock.connect((host, data_node_port))
-                table_path = dfs_path + ".sstable{}".format(row['ss_index'])
-                # 传输查询的table的路径、开始行键、结束行键
-                request = "queryArea {} {} {}".format(table_path, row_key_begin, row_key_end)
+                
                 data_node_sock.send(bytes(request, encoding='utf-8'))
                 length_data = int(data_node_sock.recv(BUF_SIZE))
                 # 接收数据
-                ################################
                 size_rec = 0
                 while size_rec < length_data:
                     data = data_node_sock.recv(BUF_SIZE)
                     size_rec = size_rec + len(data)
                     data = str(data, encoding='utf-8')
                     res = res+data
-                ################################
                 next_sstable = data_node_sock.recv(BUF_SIZE)
                 next_sstable = str(next_sstable, encoding='utf-8')
                 data_node_sock.close()
@@ -606,7 +614,7 @@ class Client:
 
     def insert(self, local_path, dfs_path):
         # 此处应该调用行键编码函数进行编码 #################################################
-        row_key = rowkey_encode(local_path) # 相对路径？绝对路径？
+        row_key = rowkey_encode(local_path) # 相对路径？绝对路径？ # Undefined func
         length_data = os.path.getsize(local_path)
         with open(local_path, 'r') as f:
             content = f.read(length_data)
@@ -676,6 +684,50 @@ class Client:
         fat_pd = str(fat_pd, encoding='utf-8')
 
         return fat_pd
+
+
+        # 在操作之后需调用该函数，形如self.queryOnce('finish', query, id)
+    
+    # 用于通知master节点任务当前状态
+    def queryOnce(self, status, query, id):
+        data = ['-1', 'trying']
+        try:
+            master_sock = socket.socket()
+            master_sock.connect((master_host, master_port))
+            request = status + ' ' + id + ' ' + query
+            master_sock.send(bytes(request, encoding='utf-8'))
+            time.sleep(0.2)  # 两次传输需要间隔一段时间，避免粘包
+            data = master_sock.recv(BUF_SIZE)
+            data = str(data, encoding='utf-8')
+            data = data.split(' ')
+            master_sock.close()
+        except Exception as e:
+            print(e)
+        finally:
+            pass
+        return data[0], data[1]
+
+    # 用于查询master节点是否被占用，在操作之前调用，其中query为需要master记录的操作名称，为string类型
+    # 返回id为master初次生成的时间戳，为string类型
+    # 认为比较合理的是，如果为占用状态没必要返回时间戳，只有成功执行的才返回时间戳
+    # query大概率包含空格。
+    def queryMaster(self, query):
+        count = 0
+        id = '-1'
+        status = 'occupied'
+        while count < 10:
+            count += 1
+            status, id = self.queryOnce('start', query, id)
+            if status == 'occupied':
+                print('System occupied, retrying in 5 sec...')
+                time.sleep(5)
+            if status == 'permitted':
+                print('System free to operate!')
+                break
+        if status == 'occupied':
+            print('Queueing for over 60 sec, check the status of master node') # 为什么是60s呢？
+            # self.queryToMaster('cancel', query, id)
+        return id
 
 # 解析命令行参数并执行对于的命令
 argv = sys.argv

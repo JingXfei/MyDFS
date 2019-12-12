@@ -12,11 +12,13 @@ map_reduce_res_dir = '/.res/'
 
 data_node_port = 11309  # DataNode程序监听端口
 name_node_port = 21309  # NameNode监听端口
+master_port = 26309 # Master监听端口
 
 # 集群中的主机列表
 # host_list = ['localhost']  
 host_list = np.array(['thumm01', 'thumm02', 'thumm03', 'thumm04', 'thumm05']) #, 'thumm06', 'thumm07', 'thumm08']
 name_node_host = "thumm01"
+master_host = "thumm01"
 
 PIECE_SIZE = 8 * 1024 # 一次发送8kB，方便整除；
 # BUF_SIZE = 16 * 1024 # 由于socket一次只能发送最多14kB，故设为该值可接受所有数据
@@ -75,3 +77,15 @@ def get_name_splited(local_path):
         local_path_1 = local_path + '!B'
 
     return (local_path_0, local_path_1)
+
+def rowkey_encode():
+    # 行键编码函数
+    pass
+
+def hash1():
+    # bloomfilter的哈希第一函数
+    pass
+
+def hash2():
+    # bloomfilter的哈希第二函数
+    pass

@@ -659,7 +659,7 @@ class TabletServer:
         # 循环计算与上次被访问的时间，时间过长则存回磁盘
         while True:
             cur_time = time.time()
-            if cur_time - self.logs_done[local_path].iloc[-1,0] > MAX_WAIT:
+            if cur_time - float(self.logs_done[local_path].iloc[-1]['timestamp']) > MAX_WAIT:
                 # 一定时间无操作，存回本地，并删除对应tablet
                 self.store_tablet(local_path)
                 self.store_log(local_path)
