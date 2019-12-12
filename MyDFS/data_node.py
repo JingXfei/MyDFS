@@ -144,7 +144,7 @@ class DataNode:
                 timestamp = request[3]
                 host_str = request[4]
                 length_data = int(request[5])
-                response = self.insert(sock_fd, table_path, row_key, timestamp, host_str, length_data):
+                response = self.insert(sock_fd, table_path, row_key, timestamp, host_str, length_data)
             else:
                 response = "Undefined command: " + " ".join(request)
             

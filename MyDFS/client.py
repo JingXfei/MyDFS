@@ -424,6 +424,7 @@ class Client:
 
         while True:
             res,nex = queryTableArea(path[-1], dfs_path, row_key, row_key_2) # 得到sstable中一个区域的内容；
+
             print("Result: \n{}".format(res)) # 一次只打印一个sstable的，再将该空间重新利用
             nex = pd.read_csv(StringIO(nex))
             if nex.shape[0] == 0:
