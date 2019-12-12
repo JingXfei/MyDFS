@@ -248,8 +248,13 @@ class NameNode:
     def get_fat_item(self, dfs_path):
         # 获取FAT表内容
         local_path = name_node_dir + dfs_path
-        response = pd.read_csv(local_path)
-        return response.to_csv(index=False)
+        try:
+            response = pd.read_csv(local_path)
+            result = response.to_csv(index=False)
+        except Exception as e:
+            print(e)
+            result = "None"
+        return result
     
     def new_fat_item(self, dfs_path, file_size):
         # file_size是作为参数输入的？------
