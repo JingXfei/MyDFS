@@ -4,11 +4,48 @@ import socket
 import time
 import math
 from io import StringIO
-
 import pandas as pd
 import numpy as np
 import base64
 from common import *
+import xxhash
+import mmh3  #murmurhash
+
+def h_1(content):
+    x=xxhash.xxh32(content)
+    out=x.intdigest()
+    return out
+
+def h_2(content):
+    sss=mmh3.hash(content)+2147483647
+    return sss
+
+def get_hash(content,h1=h_1,h2=h_2):
+    h1_out=int(h_1(content)/100000)
+    h2_out=int(h_2(content)/100000)
+    return h1_out,h2_out
+
+# 新添内容
+# 对本地文件分块并发送，存储表的信息
+def get_content(little_file_path):
+    file_type = os.path.splitext(little_file_path)[1]
+    if file_type == '.txt':
+        file_content = open(little_file_path).read()
+    elif file_type == '.png':
+        file_ = open(little_file_path, 'rb')
+        file_content = str(base64.b64encode(file_.read()))
+        file_.close()
+    else:
+        print('识别不出数据类型的数据集')
+        file_content = None
+    return file_content
+
+def sort_encode(sort_table):
+    sort_table.sort_values(by=['key'], inplace=True, ascending=True)
+    return sort_table
+
+def encode_file(file_path):
+    return os.path.abspath(file_path)
 
 class Client:
     def __init__(self):
@@ -60,41 +97,19 @@ class Client:
 
     def sscopyFromLocal(self, local_path, dfs_path):
         # python3 client.py -sscopyFromLocal little_data/ /test/test.txt
-        file_size = 64*1024
-    
+        file_size = 64 * 1024
+        
         request = "new_fat_item {} {}".format(dfs_path, file_size)
         print("Request: {}".format(request))
-    
+        
         # 从NameNode获取一张FAT表,为指向tablet的指针
         self.name_node_sock.send(bytes(request, encoding='utf-8'))
         fat_pd = self.name_node_sock.recv(BUF_SIZE)
-    
+        
         # 打印FAT表，并使用pandas读取
         fat_pd = str(fat_pd, encoding='utf-8')
         print("Fat: \n{}".format(fat_pd))
         fat = pd.read_csv(StringIO(fat_pd))
-        
-        # 新添内容
-        # 对本地文件分块并发送，存储表的信息
-        def get_content(little_file_path):
-            file_type = os.path.splitext(little_file_path)[1]
-            if file_type == '.txt':
-                file_content = open(little_file_path).read()
-            elif file_type == '.png':
-                file_ = open(little_file_path, 'rb')
-                file_content = str(base64.b64encode(file_.read()))
-                file_.close()
-            else:
-                print('识别不出数据类型的数据集')
-                file_content=None
-            return file_content
-        
-        def sort_encode(sort_table):
-            sort_table.sort_values(by=['key'], inplace=True, ascending=True)
-            return sort_table
-        
-        def encode_file(file_path):
-            return os.path.abspath(file_path)
         
         # 一个sstable为64k，一行是不超过1k的数据,所以存储了64行数据(如果是100M,用100M/1k作为行数)
         # 前63行每行里面放行键值和内容,最后一行是下一个sstable的地址
@@ -105,148 +120,174 @@ class Client:
         # 默认一行内容不超过100Bytes,可以存40行
         
         # root meta存储1、tablet的索引 2、tablet的地址 3、tablet中的最后一行行键值，
-        
+
+        # host_name_tr存放tablet和root表
         sstable = pd.DataFrame(columns=['key', 'content'])
         tablet = pd.DataFrame(columns=['ss_index', 'host_name', 'last_key'])
-        root = pd.DataFrame(columns=['tablet_index', 'host_name','last_key'])
-        host_name_tr = host_list[np.random.choice(len(host_list), dfs_replication, replace=False)]
-
-        # 对所有文件的编码进行排序（运行时间比较长，所以先存下来了）
+        root = pd.DataFrame(columns=['tablet_index', 'host_name', 'last_key'])
+        for idx, row in fat.iterrows():
+            host_str = row['host_name']
+            host_name_tr = get_hosts(host_str)
+        
+        # #对所有文件的编码进行排序（运行时间比较长，所以先存下来了）
         # #已保存，之后如果有新的数据集或到新机器上重新运行一次
-        # sort_table=pd.DataFrame(columns=['key'])
-        # sort_index=0
-        # for type_file in os.listdir(local_path):
-        #     for file in os.listdir(local_path + type_file):
-        #         for little_file in os.listdir(local_path + type_file + '/' + file):
-        #             little_file_path = local_path + type_file + '/' + file + '/' + little_file
-        #             sort_table.loc[sort_index]=encode_file(little_file_path)
-        #             sort_index+=1
-        # file_index=sort_encode(sort_table)
-        # file_index.to_csv('sort_table.csv')
+        sort_table = pd.DataFrame(columns=['key'])
+        sort_index = 0
+        for root1, dirs, files in os.walk(local_path, topdown=False):
+            for name in files:
+                sort_table.loc[sort_index] = [encode_file(os.path.join(root1, name))]
+                sort_index += 1
+        file_index = sort_encode(sort_table)
+        file_index.to_csv('sort_table.csv')
         
-        file_sort=pd.read_csv('sort_table.csv')
+        file_sort = pd.read_csv('sort_table.csv')
         #   所有文件的长度
-        all_len=len(file_sort)
+        all_len = len(file_sort)
+        
+        #   定义bloomfilter,更新hash list，并传给host_name_tr
+        bloom=BloomFilter(all_len)
+        for i in range (all_len):
+            bloom.add(file_sort['key'][i])
+        h_list=bloom.get_hashlist()
+        # f = open('hash.pkl','wb')
+        data = pkl.dumps(h_list)
+        f.close()
+        hash_path = dfs_path + ".bloom_filter"
+        length_hash = len(data)
+        print(self.sendToHosts(host_name_tr, hash_path, length_hash, data, method = 'data', data_type = 'bytes'))
+        # host_names, blk_path, length_data, content, method = 'file', data_type = 'str'
+        f.close()
+        
         #   选择63是因为最后一行是指向下一个sstable的地址
-        sstable_num=int(all_len/63)
-        data_end_num=all_len-63*sstable_num
-        ss_total_num=sstable_num+ bool(data_end_num/63)
+        sstable_num = int(all_len / 63)
+        data_end_num = all_len - 63 * sstable_num
+        ss_total_num = sstable_num + bool(data_end_num / 63)
         
-        tablet_num=int(ss_total_num/40)         #存满的tablet_num个数
-        tablet_rest=ss_total_num-tablet_num*40  #最后一个tablet中存放的sstable的个数
-        tablet_total_num=tablet_num+bool(tablet_rest)
+        tablet_num = int(ss_total_num / 40)  # 存满的tablet_num个数
+        tablet_rest = ss_total_num - tablet_num * 40  # 最后一个tablet中存放的sstable的个数
+        tablet_total_num = tablet_num + bool(tablet_rest)
         
-        flag=True
-
-        for tabindex in range (tablet_total_num):
+        flag = True
+        
+        for tabindex in range(tablet_total_num):
             tablet = pd.DataFrame(columns=['ss_index', 'host_name', 'last_key'])
-            for ssindex in range (40):
+            for ssindex in range(40):
                 sstable = pd.DataFrame(columns=['key', 'content'])
-                for data_index in range (63):
-                    #往sstable里填充内容
-                    file_index=40*63*tabindex+63*ssindex+data_index
-                    little_file_path = file_sort['key'][file_index]
-                    if not os.path.exists(little_file_path):
-                        flag=False
+                for data_index in range(63):
+                    # 往sstable里填充内容
+                    file_index = 40 * 63 * tabindex + 63 * ssindex + data_index
+                    if file_index == all_len - 1:
+                        flag = False
                         break
-                    file_content=get_content(little_file_path)
-                    sstable.loc[data_index]=[str(little_file_path),file_content]
+                    little_file_path = file_sort['key'][file_index]
+                    file_content = get_content(little_file_path)
+                    sstable.loc[data_index] = [str(little_file_path), file_content]
                 if not flag:
                     break
-                #如果有上一个sstable，往上一个的最后一行存放当前sstable的地址，并将上一个sstable传出去1
-                if 'host_name' in locals().keys()  and 'blk_path' in locals().keys() :
-                    host_name0=host_name
-                    blk_path0=blk_path
-                
-                #选择当前sstable的地址
+                # 如果有上一个sstable，往上一个的最后一行存放当前sstable的地址，并将上一个sstable传出去1
+                if 'host_name' in locals().keys() and 'blk_path' in locals().keys():
+                    host_name0 = host_name
+                    blk_path0 = blk_path
+
+                # 选择当前sstable的地址
                 host_name = host_list[np.random.choice(len(host_list), dfs_replication, replace=False)]
-                blk_path = dfs_path + ".sstable{}.csv".format(40*tabindex+ssindex)
-    
+                blk_path = dfs_path + ".sstable{}.csv".format(40 * tabindex + ssindex)
+                
                 # 存储到tablet
-                last_key=sstable['key'][len(sstable)-1]
-                tablet.loc[ssindex] = [40*tabindex+ssindex,host_name,last_key]
+                last_key = sstable['key'][len(sstable) - 1]
+                tablet.loc[ssindex] = [40 * tabindex + ssindex, host_name, last_key]
                 # 如果有上一个sstable，往上一个的最后一行存放当前sstable的地址，并将上一个sstable传出去2
                 if 'host_name0' in locals().keys() and 'blk_path0' in locals().keys():
                     send_sstable = pd.read_csv('ss.csv')
-                    send_sstable.loc[len(send_sstable)] = [40*tabindex+ssindex, host_name]
+                    send_sstable.loc[len(send_sstable)] = [40 * tabindex + ssindex, host_name]
                     send_sstable.to_csv('ss.csv', index=False)
                     length_data = os.path.getsize('ss.csv')
                     fp = open('ss.csv')
                     print(self.sendToHosts(host_name0, blk_path0, length_data, fp))
                     fp.close()
-
+                
                 # 将当前的sstable存放到ss.csv中(一个临时文件，不断被覆盖的)
                 sstable.to_csv('ss.csv', index=False)
             if not flag:
                 break
-
             # 当tablet存满到40行,发出去并存储到root
             blk_path_tablet = dfs_path + ".tablet{}.csv".format(tabindex)
-            tablet.to_csv('tablet.csv',index=False)
-            length_data=os.path.getsize('tablet.csv')
-            fp_t=open('tablet.csv')
+            tablet.to_csv('tablet.csv', index=False)
+            length_data = os.path.getsize('tablet.csv')
+            fp_t = open('tablet.csv')
             print(self.sendToHosts(host_name_tr, blk_path_tablet, length_data, fp_t))
-            root.loc[tabindex] = [tabindex,host_name_tr,last_key]
-        
-        #*到这里最后一个sstable还没有发送出去
-        #如果正好是整数个满的sstable表，在最后一个sstable最后增加None
-        if data_end_num==0:
+            root.loc[tabindex] = [tabindex, host_name_tr, last_key]
+
+        # *到这里最后一个sstable,tablet还没有发送出去
+        # 如果正好是整数个满的sstable表，在最后一个sstable最后增加None
+        if data_end_num == 0:
             last_sstable = pd.read_csv('ss.csv')
-            #增加一行index,None
+            # 增加一行index,None
             last_sstable.loc[len(last_sstable)] = [sstable_num, 'None']
             last_sstable.to_csv('ss.csv', index=False)
             length_data = os.path.getsize('ss.csv')
-            fp1=open('ss.csv')
+            fp1 = open('ss.csv')
             print(self.sendToHosts(host_name, blk_path, length_data, fp1))
             fp1.close()
-            
+        
         # 如果不是整数个满的sstable表，在最后一个sstable增加新表的地址并发出，之后发送存储满的sstable
         # 还要在tablet之后再新加一行
         else:
-            #读剩下来的sstable内容
-            for rest_data_index in range (data_end_num):
-                file_index=63*sstable_num+rest_data_index
+            # 读剩下来的sstable内容
+            for rest_data_index in range(data_end_num):
+                file_index = 63 * sstable_num + rest_data_index
                 little_file_path = file_sort['key'][file_index]
-                file_content=get_content(little_file_path)
-                sstable.loc[rest_data_index]=[str(little_file_path),file_content]
-                
-            #安排剩下的sstable存放的地址
+                file_content = get_content(little_file_path)
+                sstable.loc[rest_data_index] = [str(little_file_path), file_content]
+
+            # 安排剩下的sstable存放的地址
             host_name_re = host_list[np.random.choice(len(host_list), dfs_replication, replace=False)]
-            blk_path_re = dfs_path + ".sstable{}.csv".format(ssindex)
-            
-            #增加一行,host_name_re，并发送
+            blk_path_re = dfs_path + ".sstable{}.csv".format(ss_total_num - 1)
+
+            # 增加一行,host_name_re，并发送
             last_sstable = pd.read_csv('ss.csv')
             last_sstable.loc[len(last_sstable)] = [sstable_num, host_name_re]
             last_sstable.to_csv('ss.csv', index=False)
             length_data = os.path.getsize('ss.csv')
-            fp2=open('ss.csv')
+            fp2 = open('ss.csv')
             print(self.sendToHosts(host_name, blk_path, length_data, fp2))
             fp2.close()
-            
-            #在最后的sstable后面增加一行None ,发送最后的sstable
-            last_key=sstable['key'][len(sstable)-1]
-            sstable['key'][len(sstable)]=['end','None']
+
+            # 在最后的sstable后面增加一行None ,发送最后的sstable
+            last_key = sstable['key'][len(sstable) - 1]
+            sstable['key'][len(sstable)] = ['end', 'None']
             
             sstable.to_csv('ss.csv', index=False)
             length_data = os.path.getsize('ss.csv')
-            fp3=open('ss.csv')
+            fp3 = open('ss.csv')
             print(self.sendToHosts(host_name_re, blk_path_re, length_data, fp3))
             fp3.close()
             
             # 将最后的sstable存入到tablet表中
-            tablet.loc[len(tablet)] = [sstable_num,host_name_re,last_key]
-            root.loc[len(root)]=[tablet_total_num,'aitat',last_key]
-            #发送最后的root和tablet
-            tablet.to_csv('tabletend.csv',index=False)
-            root.to_csv('root.csv',index=False)
-            blk_path_tr = dfs_path + ".tablet{}.csv".format(tablet_total_num)
+            tablet.loc[len(tablet)] = [ss_total_num - 1, host_name_re, last_key]
+            root.loc[len(root)] = [tablet_total_num - 1, host_name_re, last_key]
+            # 发送最后的root和tablet
+            tablet.to_csv('tabletend.csv', index=False)
+            root.to_csv('root.csv', index=False)
+            blk_path_tr = dfs_path + ".tablet{}.csv".format(tablet_total_num - 1)
+            fpt = open('tabletend.csv')
+            length_data_fpt = os.path.getsize('tabletend.csv')
+            print(self.sendToHosts(host_name_tr, blk_path_tr, length_data_fpt, fpt))
+            fpt.close()
+            
             blk_path_fr = dfs_path + ".root{}.csv".format(0)
-            fpt=open('tabletend.csv')
-            fpr=open('root.csv')
-            print(self.sendToHosts(host_name_tr, blk_path_tr, length_data, fpt))
-            print(self.sendToHosts(host_name_tr, blk_path_fr, length_data, fpr))
+            fpr = open('root.csv')
+            length_data_fpr = os.path.getsize('root.csv')
+            print(self.sendToHosts(host_name_tr, blk_path_fr, length_data_fpr, fpr))
+            fpr.close()
 
-    def sendToHosts(self, host_names, blk_path, length_data, fp):
+    def sendToHosts(self, host_names, blk_path, length_data, content, method = 'file', data_type = 'str'):
+        # host_names：数据流路径，list；
+        # blk_path: 在dfs中的路径
+        # length_data: 数据长度
+        # content: 由method决定，若为file，则由文件读取；若为data，则为要发送的数据文件；
+        # method: 数据获取方式
+        # type: 数据类型，为str还是bytes
         host_str = str(host_names).replace(' ', '')
         for host in host_names:
             try:
@@ -263,13 +304,42 @@ class Client:
                 # 目前每次都建立连接，应该有绑定连接的方式
                 surplus = length_data
                 loop = math.ceil(length_data/PIECE_SIZE)
-                for i in range(loop):
-                    surplus = length_data - i*PIECE_SIZE
-                    if surplus >= PIECE_SIZE:
-                        data = fp.read(PIECE_SIZE)
+                if method == "file":
+                    # 从文件中读取数据
+                    if data_type == 'str':
+                        for i in range(loop):
+                            surplus = length_data - i*PIECE_SIZE
+                            if surplus >= PIECE_SIZE:
+                                data = fp.read(PIECE_SIZE)
+                            else:
+                                data = fp.read(surplus)
+                            data_node_sock.sendall(bytes(data, encoding='utf-8'))
                     else:
-                        data = fp.read(surplus)
-                    data_node_sock.sendall(bytes(data, encoding='utf-8'))
+                        for i in range(loop):
+                            surplus = length_data - i*PIECE_SIZE
+                            if surplus >= PIECE_SIZE:
+                                data = fp.read(PIECE_SIZE)
+                            else:
+                                data = fp.read(surplus)
+                            data_node_sock.sendall(data)
+                else:
+                    # 直接传入数据
+                    if data_type == 'str':
+                        for i in range(loop):
+                            surplus = length_data - i*PIECE_SIZE
+                            if surplus >= PIECE_SIZE:
+                                data = content[i*PIECE_SIZE:(i+1)*PIECE_SIZE]
+                            else:
+                                data = content[i*PIECE_SIZE:]
+                            data_node_sock.sendall(bytes(data, encoding='utf-8'))
+                    else:
+                        for i in range(loop):
+                            surplus = length_data - i*PIECE_SIZE
+                            if surplus >= PIECE_SIZE:
+                                data = content[i*PIECE_SIZE:(i+1)*PIECE_SIZE]
+                            else:
+                                data = content[i*PIECE_SIZE:]
+                            data_node_sock.sendall(data)
                 print("send done...")
                 res = data_node_sock.recv(BUF_SIZE)
                 data_node_sock.close()
@@ -280,8 +350,15 @@ class Client:
         return "fail"
     
     def copyToLocal(self, dfs_path, local_path):
-        # 调用getFatItem函数得到Fat表；
-        fat_pd = getFatItem(dfs_path)
+        request = "get_fat_item {}".format(dfs_path)
+        print("Request: {}".format(request))
+        
+        # 从NameNode获取一张FAT表
+        self.name_node_sock.send(bytes(request, encoding='utf-8'))
+        fat_pd = self.name_node_sock.recv(BUF_SIZE)
+        
+        # 打印FAT表，并使用pandas读取
+        fat_pd = str(fat_pd, encoding='utf-8')
         print("Fat: \n{}".format(fat_pd))
         fat = pd.read_csv(StringIO(fat_pd))
         
@@ -393,9 +470,9 @@ class Client:
         # 否则是查询local_path_1目录下的值；
         # 这里可以进行处理，比如查询目录时，查到哪里结束也是需要以row_key的形式进行表述的。
         # 首先反复调用query_table查到第一个；再基于叶节点之间的链式索引关系进行后续遍历。
-        row_key = rowkey_encode(local_path_1) # Undefined func
+        row_key = encode_file(local_path_1) 
         if local_path_2 != "None":
-            row_key_2 = rowkey_encode(local_path_2) # Undefined func
+            row_key_2 = encode_file(local_path_2) 
         else:
             row_key_2 = "None"
         path = []
@@ -414,9 +491,9 @@ class Client:
         # 否则返回Tablet中对应的ssTablet所在一行。
         tablet = queryTable(fat, 0, dfs_path, row_key) # 得到tablet中对应的一行；
         tablet = str(tablet, encoding='utf-8')
-        if tablet == "None2":
-            print("Bigger than Biggest, area not in this BigTable")
-            return path
+        # if tablet == "None2":
+        #     print("Bigger than Biggest, area not in this BigTable")
+        #     return path
         print("Next table: \n{}".format(tablet))
         tablet = pd.read_csv(StringIO(tablet))
         for i in range(tablet.shape[0]):
@@ -445,7 +522,7 @@ class Client:
         #    [key, content] 最终的内容和行键
         #   ] # 若查询成功，则返回对应row_key的，否则返回大于该row_key的第一个的。
 
-        row_key = rowkey_encode(local_path) # Undefined func
+        row_key = encode_file(local_path)
         path = []
 
         # 调用getFatItem函数得到Fat表；并处理fat表不存在的情况
@@ -466,8 +543,8 @@ class Client:
             if res_filter == "None1":
                 print("Not exist in this BigTable")
                 return path
-            elif res_filter == "None2":
-                print("Bigger than Biggest, area not in this BigTable")
+            # elif res_filter == "None2":
+            #     print("Bigger than Biggest, area not in this BigTable")
             else:
                 print("Next table: \n{}".format(res_filter))
                 tablet = pd.read_csv(StringIO(res_filter))
@@ -499,8 +576,7 @@ class Client:
 
     def bloomFilter(self, fat, dfs_path, row_key):
         # 依据要查询的row_key生成两个index，传入bloomfilter所在位置进行校验；
-        index_1 = hash1(row_key)  # Undefined func
-        index_2 = hash2(row_key)  # Undefined func
+        index1,index2 = get_hash(new_encode_file)
 
         end = '.bloom_filter'
 
@@ -548,7 +624,7 @@ class Client:
         table_path = dfs_path + end + "{}".format(row[ind_col])
         request = "query {} {} {}".format(table_path, cur_layer, row_key)
         ################################################################
-        res = self.queryMaster(request)
+        # res = self.queryMaster(request)
         ################################################################
         for host in host_names:
             try:
@@ -582,7 +658,7 @@ class Client:
         table_path = dfs_path + ".sstable{}".format(row['ss_index'])
         request = "queryArea {} {} {}".format(table_path, row_key_begin, row_key_end)
         ################################################################
-        res = self.queryMaster(request)
+        # res = self.queryMaster(request)
         ################################################################
         for host in host_names:
             try:
@@ -614,32 +690,33 @@ class Client:
 
     def insert(self, local_path, dfs_path):
         # 此处应该调用行键编码函数进行编码 #################################################
-        row_key = rowkey_encode(local_path) # 相对路径？绝对路径？ # Undefined func
+        row_key = encode_file(local_path) # 相对路径？绝对路径？
         length_data = os.path.getsize(local_path)
         with open(local_path, 'r') as f:
             content = f.read(length_data)
         insert_path = self.queryOne(dfs_path, local_path, bloom_filter = False)
         if len(insert_path) == 0:
             print("Not exist Table in this dfs_path")
-            # return None
-        elif len(insert_path) == 1:
-            # 需要新建tablet、sstable来存储
-            pass
         else:
             # 此时path为[fat, root_tablet, tablet, sstable]四层
             host_str = insert_path[2].iloc[0]['host_name'].replace(' ', '')
             end = '.sstable'
             id = insert_path[2].iloc[0]['ss_index']
+            insert_layer = 2
             while True:
                 # 需要插入到指定sstable中，并处理可能的分裂
                 table_path = dfs_path + end + "{}".format(id)
                 request = "insert {} {}".format(host_str, table_path)
                 # 和master通信获取时间戳和host；调用对应通信函数
-                timestamp, host = sendToMaster(request)
+                ################################
+                # timestamp, host = sendToMaster(request)
+                timestamp = str(time.time())
+                host = get_hosts(host_str)[0] # 暂时用第一个
+                ################################
                 # 和host(DN)通信发送信息[dfs_path, row_key, timestamp, host_str, length_data]
                 try:
                     data_node_sock = socket.socket()
-                    print("insert to "+ host +"...",end='')
+                    print("insert to "+ host + ", insert layer: " + insert_layer,end='.\n')
                     data_node_sock.connect((host, data_node_port))
                     request = "insert {} {} {} {} {}".format(table_path, row_key, timestamp, host_str, length_data)
                     data_node_sock.send(bytes(request, encoding='utf-8'))
@@ -647,6 +724,7 @@ class Client:
                     data_node_sock.send(bytes(content, encoding='utf-8'))
                     res = data_node_sock.recv(BUF_SIZE)
                     data_node_sock.close()
+                    insert_layer = insert_layer - 1
                 except:
                     data_node_sock.close()
                     print(host+" error!")
@@ -656,21 +734,40 @@ class Client:
                     break
                 else:
                     tablet = pd.read_csv(StringIO(res))
-                    row_key = tablet.iloc[0]['last_key']
+                    row_key = tablet.iloc[0]['last_key0']
+                    row_key_1 = tablet.iloc[0]['last_key1']
                     index0 = tablet.iloc[0]['index0']
                     index1 = tablet.iloc[0]['index1']
                     index = id # 需要被删除的index
                     if end == '.sstable':
-                        # host_str = insert_path[1].iloc[0]['host_name'].replace(' ', '')
+                        host_str = insert_path[1].iloc[0]['host_name'].replace(' ', '')
                         end = '.tablet'
                         id = insert_path[1].iloc[0]['tablet_index']
                     else:
-                        # host_str = insert_path[0].iloc[0]['host_name'].replace(' ', '')
+                        host_str = insert_path[0].iloc[0]['host_name'].replace(' ', '')
                         end = '.root_tablet'
                         id = insert_path[0].iloc[0]['blk_no']
                     # 发送的content包含被删除的ID，新建立的两行的id0，id1
-                    content = index+" "+index0+" "+index1#+" "+host_str
+                    content = index+" "+index0+" "+index1+" "+row_key_1
                     length_data = len(content)
+        host_str = get_hosts(insert_path[0].iloc[0]['host_name'])
+        bf_path = dfs_path + '.bloom_filter'
+        print(update_hash(encode_file(local_path), host_str, bf_path))
+
+    def update_hash(self,new_encode_file,host_name_tr,bf_path):
+        h1_index,h2_index=get_hash(new_encode_file)
+        for i in range (len(host_name_tr)):
+            try:
+                data_node_sock = socket.socket()
+                data_node_sock.connect((host_name_tr[i], data_node_port))
+                request = "update_hash {} {} {}".format(h1_index, h2_index,bf_path)
+                data_node_sock.send(bytes(request, encoding='utf-8'))
+                time.sleep(0.2)  # 两次传输需要间隔一段时间，避免粘包
+                data_node_sock.recv(1024)
+                data_node_sock.close()
+            except Exception as e:
+                print(e)
+        return "Done in updata_hash"
 
     def getFatItem(self, dfs_path):
         request = "get_fat_item {}".format(dfs_path)
@@ -728,6 +825,33 @@ class Client:
             print('Queueing for over 60 sec, check the status of master node') # 为什么是60s呢？
             # self.queryToMaster('cancel', query, id)
         return id
+
+class BloomFilter(object):
+    def __init__(self, capacity,h1=h_1,h2=h_2):
+        self.capacity = capacity        #70000
+        self.h1=h1
+        self.h2=h2
+        self.h1_list=[0 for _ in range(capacity*10)]
+        self.h2_list=[0 for _ in range(capacity*10)]
+        self._size = len(self.h1_list)
+    
+    def add(self, msg):
+        msg_index=get_hash(msg,self.h1,self.h2)
+        self.h1_list[msg_index[0]]=1
+        self.h2_list[msg_index[1]]=1
+
+    def is_exist(self, msg):
+        msg_index=get_hash(msg,self.h1,self.h2)
+        if self.h1_list[msg_index[0]]==0 and self.h2_list[msg_index[1]]==0:
+            return False
+        else:
+            return True
+        
+    def __len__(self):
+        return self._size
+    
+    def get_hashlist(self):
+        return [self.h1_list,self.h2_list]
 
 # 解析命令行参数并执行对于的命令
 argv = sys.argv

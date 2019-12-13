@@ -27,7 +27,7 @@ BUF_SIZE = dfs_blk_size * 2
 # 心跳频率
 heart_T = 5
 # 最大无心跳计数
-heart_max_count = 10 # 50s
+heart_max_count = 50 # 50s
 rebuild_max_count = 3
 
 # 最大行数和最小行数（包含sstable最后一行）
@@ -46,37 +46,37 @@ def get_hosts(host_str):
     host_names = name_str[index]
     return host_names
 
-def get_name_splited(local_path):
+def get_name_splited(index):
     # sstable0 3, sstable0 B, ...
-    index = local_path.split('!')[-1]
-    if (index[0] > '0' and index[0] < '9') or (index[0] > 'A' and index[0] < 'F'):
-        temp = index[-1]
-        if temp == '1':
-            local_path_0 = local_path[:-1] + '0'
-            local_path_1 = local_path[:-1] + '2'
-        elif temp == '5':
-            local_path_0 = local_path[:-1] + '4'
-            local_path_1 = local_path[:-1] + '6'
-        elif temp == '9':
-            local_path_0 = local_path[:-1] + '8'
-            local_path_1 = local_path[:-1] + 'A'
-        elif temp == 'D':
-            local_path_0 = local_path[:-1] + 'C'
-            local_path_1 = local_path[:-1] + 'E'
-        elif temp == '3':
-            local_path_0 = local_path[:-1] + '1'
-            local_path_1 = local_path[:-1] + '5'
-        elif temp == 'B':
-            local_path_0 = local_path[:-1] + '9'
-            local_path_1 = local_path[:-1] + 'D'
+    temp = index.split('!')
+    if len(temp) > 1:
+        end = temp[-1][-1]
+        if end == '1':
+            index_0 = index[:-1] + '0'
+            index_1 = index[:-1] + '2'
+        elif end == '5':
+            index_0 = index[:-1] + '4'
+            index_1 = index[:-1] + '6'
+        elif end == '9':
+            index_0 = index[:-1] + '8'
+            index_1 = index[:-1] + 'A'
+        elif end == 'D':
+            index_0 = index[:-1] + 'C'
+            index_1 = index[:-1] + 'E'
+        elif end == '3':
+            index_0 = index[:-1] + '1'
+            index_1 = index[:-1] + '5'
+        elif end == 'B':
+            index_0 = index[:-1] + '9'
+            index_1 = index[:-1] + 'D'
         else:
-            local_path_0 = local_path + '3'
-            local_path_1 = local_path + 'B'
+            index_0 = index + '3'
+            index_1 = index + 'B'
     else:
-        local_path_0 = local_path + '!3'
-        local_path_1 = local_path + '!B'
+        index_0 = index + '!3'
+        index_1 = index + '!B'
 
-    return (local_path_0, local_path_1)
+    return (index_0, index_1)
 
 def rowkey_encode():
     # 行键编码函数

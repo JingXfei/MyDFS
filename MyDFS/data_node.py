@@ -145,9 +145,13 @@ class DataNode:
                 host_str = request[4]
                 length_data = int(request[5])
                 response = self.insert(sock_fd, table_path, row_key, timestamp, host_str, length_data)
+            elif cmd == "update_hash":
+                index0 = int(request[1])
+                index1 = int(request[2])
+                path = request[3]
+                response = self.update_hash(index0, index1, path)
             else:
                 response = "Undefined command: " + " ".join(request)
-            
             sock_fd.send(bytes(response, encoding='utf-8'))
         except Exception as e:  # 如果出错则打印错误信息
             print(e)
@@ -457,7 +461,8 @@ class DataNode:
         # 找到则返回，未找到返回大于他的第一个
         # 在TS中查询，查询操作不记录log
         if not self.tablet_server:
-            return "May be error for there is not a Tablet Server"
+            self.CreateTS(table_path)
+            print("May be error for there is not a Tablet Server")
         local_path = data_node_dir + table_path
 
         # 创建数据流
@@ -467,12 +472,12 @@ class DataNode:
         # 传输命令到TS进程
         self.DN_end.send(['query', data])
         result = self.DN_end.recv()
-        return result
+        return result.to_csv(index=False)
     
     def bloomFilter(self, table_path, index_1, index_2, row_key):
         # 必然查询的是.bloom_filter文件，该文件格式需要确定；
         local_path = data_node_dir + table_path
-        file_size = os.path.getsize(local_path)
+        # file_size = os.path.getsize(local_path)
         with open(local_path) as f:
             data = pkl.load(f)
         if data[0][index_1] == 1 and data[1][index_2] == 1:
@@ -481,10 +486,20 @@ class DataNode:
         else:
             return "None1"
 
+    def update_hash(self, index0, index1, table_path):
+        local_path = data_node_dir + table_path
+        with open(local_path) as f:
+            data = pkl.load(f)
+        data[0][index0] = 1
+        data[1][index1] = 1
+        pkl.dump(data, local_path)
+        return "Done"
+
     def queryArea(self, sock_fd, table_path, row_key_begin, row_key_end):
         # 必然查询的是sstable，
         if not self.tablet_server:
-            return "May be error for there is not a Tablet Server"
+            self.CreateTS(table_path)
+            print("May be error for there is not a Tablet Server")
         local_path = data_node_dir + table_path
 
         # 创建数据流
@@ -525,7 +540,7 @@ class DataNode:
             self.p.start()
             self.tablet_server = 1
         try:
-            self.DN_end.send(['read:', local_path])
+            self.DN_end.send(['read', local_path])
         except Exception as e:
             print(e)
         return self.DN_end.recv()
@@ -533,9 +548,10 @@ class DataNode:
     def insert(self, sock_fd, table_path, row_key, timestamp, host_str, length_data):
         # 插入到对应的tablet中 <k,v>，此时master应该已经指挥该datanode建立TS进程
         if not self.tablet_server:
-            return "May be error for there is not a Tablet Server"
-        local_path = data_node_dir + table_path
+            self.CreateTS(table_path)
+            print("May be error for there is not a Tablet Server")
 
+        local_path = data_node_dir + table_path
         # 接收数据
         content = ""
         size_rec = 0
@@ -573,10 +589,10 @@ class DataNode:
         
         # 传输命令到TS进程
         self.DN_end.send(['log:', log])
-        result = self.DN_end.recv()
-        if result != 'Done':
-            # 需要向后续节点发送新的数据
-            info = pd.read_csv(StringIO(result))
+        data = self.DN_end.recv()
+        if data[0] == 'Split':
+            # 需要向后续节点发送新的数据，三个sstable
+            info = data[1]
             index0 = info.iloc[0]['index0']
             index1 = info.iloc[0]['index1']
             length_data = os.path.getsize(log_path)
@@ -594,7 +610,11 @@ class DataNode:
             self.send(table_path_0, length_data_0, host_names[1], host_str, 1)
             length_data_1 = os.path.getsize(data_node_dir + table_path_1)
             self.send(table_path_1, length_data_1, host_names[1], host_str, 1)
-        return result
+            return data[1].to_csv(index=False)
+        elif data[0] == 'Lastkey':
+            # 不需要向后续节点发送新的数据，但返回data[1]用于lablet等的插入
+            return data[1].to_csv(index=False)
+        return data[0]
 
 class TabletServer:
     def __init__(self):
@@ -679,8 +699,10 @@ class TabletServer:
         other = op['other']
         isfinish = op['isfinish']
 
+        df = pd.DataFrame(columns = ['last_key0', 'last_key1', 'index0', 'index1'])
+
         if cmd == "insert":
-            result = self.insert(local_path, row_key, content, other)
+            result,df = self.insert(local_path, row_key, content, other, df)
         else:
             result = "Done"
         n = self.logs_done[local_path].shape[0]
@@ -691,7 +713,7 @@ class TabletServer:
             print(self.logs_done[local_path])
             del self.logs[local_path]
             del self.logs_done[local_path]
-        return result
+        return [result,df]
 
     def log(self, data):
         # 日志记录并进行具体操作
@@ -702,7 +724,7 @@ class TabletServer:
         result = self.process_log(op_df.iloc[0])
         return result
 
-    def insert(self, local_path, row_key, content, other):
+    def insert(self, local_path, row_key, content, other, df):
         # 以local_path为键找到对应字典中的数据，根据row_key插入指定内容
         # sstable = pd.DataFrame(columns=['key', 'content'])
         # tablet = pd.DataFrame(columns=['ss_index', 'host_name', 'last_key'])
@@ -716,73 +738,106 @@ class TabletServer:
             temp2 = data[data.key > row_key]
             new = pd.DataFrame({'key': [row_key], 'content': [content]})
             self.tablets[local_path] = pd.concat([temp1,new,temp2,last], ignore_index=True)
+            index = local_path.split('.')[-1][len('sstable'):]
+            
             if self.tablets[local_path].shape[0] > MAX_ROW:
                 # 行数超过最大，需要分裂；
                 # 返回信息：新生成的sstable的ss_index, last_key
                 # 存储新的sstable到本地，更新本地log
-                local_path_0, local_path_1 = get_name_splited(local_path)
-                index0 = local_path_0.split('.')[-1][len('sstable'):]
-                index1 = local_path_1.split('.')[-1][len('sstable'):]
+                index0, index1 = get_name_splited(index)
+                l = len(index)
+                local_path_0 = local_path[:-l]+index0
+                local_path_1 = local_path[:-l]+index1
 
                 n = self.tablets[local_path].shape[0]
                 self.tablets[local_path_0] = self.tablets[local_path].iloc[:n//2]
                 self.tablets[local_path_1] = self.tablets[local_path].iloc[n//2:]
                 self.logs[local_path_0] = pd.DataFrame(columns = ['timestamp', 'cmd', 'localpath', 'row_key', 'content', 'other', 'isfinish'])
                 self.logs[local_path_1] = pd.DataFrame(columns = ['timestamp', 'cmd', 'localpath', 'row_key', 'content', 'other', 'isfinish'])
+                self.logs_done[local_path_0] = pd.DataFrame(columns = ['timestamp', 'cmd', 'localpath', 'row_key', 'content', 'other', 'isfinish'])
+                self.logs_done[local_path_1] = pd.DataFrame(columns = ['timestamp', 'cmd', 'localpath', 'row_key', 'content', 'other', 'isfinish'])
 
-                last_key = self.tablets[local_path_0].iloc[-1]['key']
                 host_names = get_hosts(other)
                 self.tablets[local_path_0].iloc[self.tablets[local_path_0].shape[0]] = [index1, host_names]
-                
+                last_key0 = self.tablets[local_path_0].iloc[-2]['key']
+                last_key1 = self.tablets[local_path_1].iloc[-2]['key']
+
                 self.store_tablet(local_path_0)
                 self.store_tablet(local_path_1)
                 self.store_tablet(local_path) # 目前还是先保存一下
                 del self.tablets[local_path]
 
-                result = pd.DataFrame({'last_key': [last_key], 'index0': [index0], 'index1': [index1]})
-                return result.to_csv(index=False)
-            return "Done"
+                df.iloc[0] = [last_key0, last_key1, index0, index1]
+                return ("Split",df)
+
+            if temp2.shape[0] == 0:
+                # 即要插入的行键大于该sstable的最后一行的行键
+                print("Warning: key > last_key")
+                index0 = index
+                last_key0 = row_key
+                index1 = '-1'
+                last_key1 = '-1'
+                df.iloc[0] = [last_key0, last_key1, index0, index1]
+                return ("Lastkey",df)
+
+            return ("Done",df)
         elif marker[0] == 't':
             # 插入的对象是tablet，则需要删掉一行增加两行；
-            # content(index, index0, index1)需要转换
+            # content(index, index0, index1, row_key_1)需要转换
             temp = content.split(" ")
             index_del = temp[0]
             index0 = temp[1]
             index1 = temp[2]
-            # host_name = get_hosts(temp[3])
-            
-            temp1 = data[data.last_key < row_key]
-            temp2 = data[data.last_key >= row_key]
-            new = temp2.iloc[0]
-            new.iloc[0,[0,2]] = [index0,row_key]
-            temp2.iloc[0,0] = index1
-            print("new rows 1 in tablet:\n",new)
-            print("new rows 2 in tablet:\n",temp2.iloc[0])
-            self.tablets[local_path] = pd.concat([temp1,new,temp2], ignore_index=True)
+            last_key1 = temp[3]
+
+            if index1 == '-1':
+                # 更改原来行的last_key
+                temp1 = data[data.last_key <= row_key]
+                temp2 = data[data.last_key > row_key]
+                temp1.iloc[-1,[0,2]] = [index0, row_key]
+                self.tablets[local_path] = pd.concat([temp1,temp2], ignore_index=True)
+                print("update rows 1 in tablet:\n",temp1.iloc[[-1]])
+                return ("Done", df)
+            else:
+                # 删除原来行并加入两行
+                temp1 = data[data.last_key <= row_key1]
+                temp2 = data[data.last_key > row_key1]
+                new = temp1.iloc[[-1]]
+                new.iloc[0,[0,2]] = [index1,row_key1]
+                temp1.iloc[-1,[0,2]] = [index0, row_key0]
+                print("new rows 1 in tablet:\n",new)
+                print("new rows 2 in tablet:\n",temp1.iloc[[-1]])
+                self.tablets[local_path] = pd.concat([temp1,new,temp2], ignore_index=True)
+
             if self.tablets[local_path].shape[0] > MAX_ROW:
                 # 行数超过最大，需要分裂；
                 # 返回信息：新生成的tablet的tablet_index, last_key
                 # 存储新的tablet到本地，更新本地log
-                local_path_0, local_path_1 = get_name_splited(local_path)
-                index0 = local_path_0.split('.')[-1][len('tablet'):]
-                index1 = local_path_1.split('.')[-1][len('tablet'):]
+                index0, index1 = get_name_splited(index)
+                l = len(index)
+                local_path_0 = local_path[:-l]+index0
+                local_path_1 = local_path[:-l]+index1
 
                 n = self.tablets[local_path].shape[0]
                 self.tablets[local_path_0] = self.tablets[local_path].iloc[:n//2]
                 self.tablets[local_path_1] = self.tablets[local_path].iloc[n//2:]
                 self.logs[local_path_0] = pd.DataFrame(columns = ['timestamp', 'cmd', 'localpath', 'row_key', 'content', 'other', 'isfinish'])
                 self.logs[local_path_1] = pd.DataFrame(columns = ['timestamp', 'cmd', 'localpath', 'row_key', 'content', 'other', 'isfinish'])
+                self.logs_done[local_path_0] = pd.DataFrame(columns = ['timestamp', 'cmd', 'localpath', 'row_key', 'content', 'other', 'isfinish'])
+                self.logs_done[local_path_1] = pd.DataFrame(columns = ['timestamp', 'cmd', 'localpath', 'row_key', 'content', 'other', 'isfinish'])
 
-                last_key = self.tablets[local_path_0].iloc[-1]['last_key']
-                
+                last_key0 = self.tablets[local_path_0].iloc[-2]['key']
+                last_key1 = self.tablets[local_path_1].iloc[-2]['key']
+
                 self.store_tablet(local_path_0)
                 self.store_tablet(local_path_1)
+                self.store_tablet(local_path) # 目前还是先保存一下
                 del self.tablets[local_path]
 
-                result = pd.DataFrame({'last_key': [last_key], 'index0': [index0], 'index1': [index1]})
-                return result.to_csv(index=False)
+                df.iloc[0] = [last_key0, last_key1, index0, index1]
+                return ("Split",df)
                 
-            return "Done"
+            return ("Done",df)
         else:
             # 插入的对象是root_tablet
             # content(tablet_index, host_str)需要转换为tablet_index和host_name(list)
@@ -799,7 +854,7 @@ class TabletServer:
             print("new rows 1 in tablet:\n",new)
             print("new rows 2 in tablet:\n",temp2.iloc[0])
             self.tablets[local_path] = pd.concat([temp1,new,temp2], ignore_index=True)
-            return "Done"
+            return ("Done",df)
 
     def store_tablet(self, local_path):
         self.tablets[local_path].to_csv(local_path, index=False)
@@ -812,36 +867,39 @@ class TabletServer:
         cur_layer = data[1]
         row_key = data[2]
         self.read_tablet(local_path)
+        tablet = self.tablets[local_path]
         if cur_layer == 0:
             # 要查讯对应的row_key在哪一行下；
-            tablet = self.tablets[local_path]
             if row_key > tablet.iloc[-1]['last_key']:
                 # 大于树中存储数据的最大值；
-                result = "None2"
-                return result
-            result = tablet[tablet.last_key >= row_key].iloc[[0]]
+                result = tablet.iloc[[-1]]
+            else:
+                result = tablet[tablet.last_key >= row_key].iloc[[0]]
             tablet_id = result.iloc[0]['tablet_index']
-            l = len('.root_tablet0')      
-            new_path = table_path[:-l]+".tablet{}".format(tablet_id)
-            ss_info = query(new_path, 1, row_key)
-            ss_info = pd.read_csv(StringIO(ss_info))
+            l = len('.root_tablet0')
+            new_path = local_path[:-l]+".tablet{}".format(tablet_id)
+            ss_info = self.query([new_path, 1, row_key])
 
-            res = pd.DataFrame(columns = ['ss_index', 'host_name', 'last_key'])
+            res = pd.DataFrame(columns = ['index', 'host_name', 'last_key'])
             res.iloc[0] = result.iloc[0].tolist()
             res.iloc[1] = ss_info.iloc[0].tolist()
             result = res
-            # return res.to_csv(index=False)
         elif cur_layer == 1:
-            tablet = pd.read_csv(local_path)
-            result = tablet[tablet.last_key >= row_key].iloc[[0]]
-            # return result.to_csv(index=False)
+            if row_key > tablet.iloc[-1]['last_key']:
+                # 大于树中存储数据的最大值；
+                result = tablet.iloc[[-1]]
+            else:
+                result = tablet[tablet.last_key >= row_key].iloc[[0]]
         else:
-            sstable = pd.read_csv(local_path)
-            result = sstable[sstable.key >= row_key].iloc[[0]]
+            if row_key > tablet.iloc[-1]['last_key']:
+                # 大于树中存储数据的最大值；
+                result = tablet.iloc[[-2]]
+            else:
+                result = tablet[tablet.last_key >= row_key].iloc[[0]]
             ################################################################
             # 较大文件的query需要考虑（还未完成）                               #
             ################################################################
-        return result.to_csv(index=False)
+        return result
 
     def query_area(self, data):
         # 必然查询的是sstable，
