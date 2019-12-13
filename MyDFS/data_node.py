@@ -182,16 +182,20 @@ class DataNode:
         # 若目录不存在则创建新目录
         os.system("mkdir -p {}".format(os.path.dirname(local_path)))
         size_rec = 0
+        print("start store...")
         if mode == 'w':
             f = open(local_path, "wb")
+            print("rewrite as bytes")
             while size_rec < length_data:
                 chunk_data = sock_fd.recv(BUF_SIZE)
                 size_rec = size_rec + len(chunk_data)
                 # 将数据块写入本地文件
                 f.write(chunk_data)
+            print("store done")
             f.close()
         else:
             content = ""
+            print("append as bytes")
             while size_rec < length_data:
                 chunk_data = sock_fd.recv(BUF_SIZE)
                 size_rec = size_rec + len(chunk_data)
@@ -240,7 +244,7 @@ class DataNode:
             # 2. 发送数据
             if content == False:
                 local_path = data_node_dir + blk_path
-                fp = open(local_path)
+                fp = open(local_path, 'rb')
                 loop = math.ceil(length_data/PIECE_SIZE)
                 surplus = length_data
                 for i in range(loop):
@@ -249,17 +253,26 @@ class DataNode:
                         data = fp.read(PIECE_SIZE)
                     else:
                         data = fp.read(surplus)
-                    data_node_sock.sendall(bytes(data, encoding='utf-8'))
+                    data_node_sock.sendall(data)
             else:
                 loop = math.ceil(length_data/PIECE_SIZE)
                 surplus = length_data
-                for i in range(loop):
-                    surplus = length_data - i*PIECE_SIZE
-                    if surplus >= PIECE_SIZE:
-                        data = content[i*PIECE_SIZE:(i+1)*PIECE_SIZE]
-                    else:
-                        data = content[i*PIECE_SIZE:]
-                    data_node_sock.sendall(bytes(data, encoding='utf-8'))
+                if isinstance(content,bytes):
+                    for i in range(loop):
+                        surplus = length_data - i*PIECE_SIZE
+                        if surplus >= PIECE_SIZE:
+                            data = content[i*PIECE_SIZE:(i+1)*PIECE_SIZE]
+                        else:
+                            data = content[i*PIECE_SIZE:]
+                        data_node_sock.sendall(data)
+                else:
+                    for i in range(loop):
+                        surplus = length_data - i*PIECE_SIZE
+                        if surplus >= PIECE_SIZE:
+                            data = content[i*PIECE_SIZE:(i+1)*PIECE_SIZE]
+                        else:
+                            data = content[i*PIECE_SIZE:]
+                        data_node_sock.sendall(bytes(data, encoding='utf-8'))
             res = data_node_sock.recv(BUF_SIZE)
             data_node_sock.close()
             fp.close()

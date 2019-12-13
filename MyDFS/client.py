@@ -10,6 +10,7 @@ import base64
 from common import *
 import xxhash
 import mmh3  #murmurhash
+import pickle as pkl
 
 def h_1(content):
     x=xxhash.xxh32(content)
@@ -21,8 +22,8 @@ def h_2(content):
     return sss
 
 def get_hash(content,h1=h_1,h2=h_2):
-    h1_out=int(h_1(content)/100000)
-    h2_out=int(h_2(content)/100000)
+    h1_out=int(h1(content)/100000)
+    h2_out=int(h2(content)/100000)
     return h1_out,h2_out
 
 # 新添内容
@@ -129,20 +130,29 @@ class Client:
             host_str = row['host_name']
             host_name_tr = get_hosts(host_str)
         
-        # #对所有文件的编码进行排序（运行时间比较长，所以先存下来了）
-        # #已保存，之后如果有新的数据集或到新机器上重新运行一次
-        sort_table = pd.DataFrame(columns=['key'])
-        sort_index = 0
-        for root1, dirs, files in os.walk(local_path, topdown=False):
-            for name in files:
-                sort_table.loc[sort_index] = [encode_file(os.path.join(root1, name))]
-                sort_index += 1
-        file_index = sort_encode(sort_table)
-        file_index.to_csv('sort_table.csv')
+        # # #对所有文件的编码进行排序（运行时间比较长，所以先存下来了）
+        # # #已保存，之后如果有新的数据集或到新机器上重新运行一次
+        # sort_table = pd.DataFrame(columns=['key'])
+        # sort_index = 0
+        # for root1, dirs, files in os.walk(local_path, topdown=False):
+        #     for name in files:
+        #         sort_table.loc[sort_index] = [encode_file(os.path.join(root1, name))]
+        #         sort_index += 1
+        # ################################
+        # print(sort_table.iloc[:10])
+        # ################################
+        # file_index = sort_encode(sort_table)
+        # ################################
+        # print(file_index.iloc[:10])
+        # ################################
+        # file_index.to_csv('sort_table.csv')
         
         file_sort = pd.read_csv('sort_table.csv')
         #   所有文件的长度
         all_len = len(file_sort)
+        ################################
+        # print(file_sort.iloc[:10])
+        ################################
         
         #   定义bloomfilter,更新hash list，并传给host_name_tr
         bloom=BloomFilter(all_len)
@@ -151,12 +161,12 @@ class Client:
         h_list=bloom.get_hashlist()
         # f = open('hash.pkl','wb')
         data = pkl.dumps(h_list)
-        f.close()
+        # f.close()
         hash_path = dfs_path + ".bloom_filter"
         length_hash = len(data)
         print(self.sendToHosts(host_name_tr, hash_path, length_hash, data, method = 'data', data_type = 'bytes'))
         # host_names, blk_path, length_data, content, method = 'file', data_type = 'str'
-        f.close()
+        # f.close()
         
         #   选择63是因为最后一行是指向下一个sstable的地址
         sstable_num = int(all_len / 63)
@@ -168,6 +178,8 @@ class Client:
         tablet_total_num = tablet_num + bool(tablet_rest)
         
         flag = True
+
+        # print(tablet_total_num) # 1
         
         for tabindex in range(tablet_total_num):
             tablet = pd.DataFrame(columns=['ss_index', 'host_name', 'last_key'])
@@ -206,6 +218,7 @@ class Client:
                     print(self.sendToHosts(host_name0, blk_path0, length_data, fp))
                     fp.close()
                 
+                # print(sstable) # 1
                 # 将当前的sstable存放到ss.csv中(一个临时文件，不断被覆盖的)
                 sstable.to_csv('ss.csv', index=False)
             if not flag:
@@ -310,17 +323,17 @@ class Client:
                         for i in range(loop):
                             surplus = length_data - i*PIECE_SIZE
                             if surplus >= PIECE_SIZE:
-                                data = fp.read(PIECE_SIZE)
+                                data = content.read(PIECE_SIZE)
                             else:
-                                data = fp.read(surplus)
+                                data = content.read(surplus)
                             data_node_sock.sendall(bytes(data, encoding='utf-8'))
                     else:
                         for i in range(loop):
                             surplus = length_data - i*PIECE_SIZE
                             if surplus >= PIECE_SIZE:
-                                data = fp.read(PIECE_SIZE)
+                                data = content.read(PIECE_SIZE)
                             else:
-                                data = fp.read(surplus)
+                                data = content.read(surplus)
                             data_node_sock.sendall(data)
                 else:
                     # 直接传入数据
@@ -344,7 +357,8 @@ class Client:
                 res = data_node_sock.recv(BUF_SIZE)
                 data_node_sock.close()
                 return str(res, encoding='utf-8')
-            except:
+            except Exception as e:
+                print(e)
                 print("send to "+host+" error! Maybe it break or disconnect! ")
                 continue
         return "fail"

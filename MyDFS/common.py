@@ -1,11 +1,11 @@
 import numpy as np
 import pandas as pd
 dfs_replication = 3
-dfs_blk_size = 64 * 1024 * 1024
+dfs_blk_size = 1 * 1024 * 1024
 
 # NameNode和DataNode数据存放位置
-name_node_dir = "./dfs/name"
-data_node_dir = "./dfs/data"
+name_node_dir = "./MyDFS/dfs/name"
+data_node_dir = "./MyDFS/dfs/data"
 
 map_reduce_code_dir = '/.code/'
 map_reduce_res_dir = '/.res/'
@@ -78,14 +78,14 @@ def get_name_splited(index):
 
     return (index_0, index_1)
 
-def rowkey_encode():
-    # 行键编码函数
-    pass
+# def rowkey_encode():
+#     # 行键编码函数
+#     pass
 
-def hash1():
-    # bloomfilter的哈希第一函数
-    pass
+# def hash1():
+#     # bloomfilter的哈希第一函数
+#     pass
 
-def hash2():
-    # bloomfilter的哈希第二函数
-    pass
+# def hash2():
+#     # bloomfilter的哈希第二函数
+#     pass
