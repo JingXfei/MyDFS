@@ -491,11 +491,11 @@ class DataNode:
         # 必然查询的是.bloom_filter文件，该文件格式需要确定；
         local_path = data_node_dir + table_path
         # file_size = os.path.getsize(local_path)
-        with open(local_path) as f:
+        with open(local_path, 'rb') as f:
             data = pkl.load(f)
         if data[0][index_1] == 1 and data[1][index_2] == 1:
             l = len('.bloom_filter')
-            return self.query(table_path[:-l]+'.root_tablet0', 0, row_key)
+            return self.query(table_path[:-l]+'.root0', 0, row_key)
         else:
             return "None1"
 
@@ -664,13 +664,14 @@ class TabletServer:
         self.TS_end.send(response)
     
     def read_tablet(self, local_path):
-        if self.tablet.haskey(local_path):
+        if local_path in self.tablets.keys():
+            print("has loaded to Mem")
             return True
         # 读取tablet顺便生成对应的log，一个0行的df
         self.tablets[local_path] = pd.read_csv(local_path)
         self.logs[local_path] = pd.DataFrame(columns = ['timestamp', 'cmd', 'localpath', 'row_key', 'content', 'other', 'isfinish'])
         self.logs_done[local_path] = pd.DataFrame(columns = ['timestamp', 'cmd', 'localpath', 'row_key', 'content', 'other', 'isfinish'])
-        self.times[local_path] = 0
+        self.times[local_path] = time.time()
         self.check_tablet(local_path)
         # 循环检查log和记录时间的线程
         check_times = threading.Thread(target=TabletServer.check_times, args=(self,local_path))
@@ -681,18 +682,26 @@ class TabletServer:
     def check_tablet(self,local_path):
         # 用于检查对应tablet在磁盘的log，看读取的tablet是否是最新的。
         log_path = local_path + ".log"
-        log_temp = pd.read_csv(log_path)
-        # 检查是否本地记录的log均已完成，若未完成则读入对应的任务到内存log中
-        end = log_temp[log_temp.isfinish == 0].index.tolist()[-1]
-        op_df = log_temp.iloc[end+1:]
-        for i in range(op_df.shape[0]):
-            self.process_log(op_df.iloc[i])
+        try:
+            log_temp = pd.read_csv(log_path)
+            # 检查是否本地记录的log均已完成，若未完成则读入对应的任务到内存log中
+            end = log_temp[log_temp.isfinish == '0'].index.tolist()[-1]
+            op_df = log_temp.iloc[end+1:]
+            for i in range(op_df.shape[0]):
+                self.process_log(op_df.iloc[i])
+        except Exception as e:
+            print("May not exist log now!")
+            print(e)
 
     def check_times(self, local_path):
         # 循环计算与上次被访问的时间，时间过长则存回磁盘
         while True:
             cur_time = time.time()
-            if cur_time - float(self.logs_done[local_path].iloc[-1]['timestamp']) > MAX_WAIT:
+            if self.logs_done[local_path].shape[0] == 0:
+                delta = cur_time - self.times[local_path]
+            else:
+                delta = cur_time - float(self.logs_done[local_path].iloc[-1]['timestamp'])
+            if delta > MAX_WAIT:
                 # 一定时间无操作，存回本地，并删除对应tablet
                 self.store_tablet(local_path)
                 self.store_log(local_path)
@@ -883,17 +892,20 @@ class TabletServer:
         tablet = self.tablets[local_path]
         if cur_layer == 0:
             # 要查讯对应的row_key在哪一行下；
+            print(row_key, tablet.iloc[-1]['last_key'])
             if row_key > tablet.iloc[-1]['last_key']:
                 # 大于树中存储数据的最大值；
                 result = tablet.iloc[[-1]]
             else:
                 result = tablet[tablet.last_key >= row_key].iloc[[0]]
+                print(tablet[tablet.last_key >= row_key])
             tablet_id = result.iloc[0]['tablet_index']
-            l = len('.root_tablet0')
+            l = len('.root0')
             new_path = local_path[:-l]+".tablet{}".format(tablet_id)
             ss_info = self.query([new_path, 1, row_key])
 
             res = pd.DataFrame(columns = ['index', 'host_name', 'last_key'])
+            print(result,ss_info)
             res.iloc[0] = result.iloc[0].tolist()
             res.iloc[1] = ss_info.iloc[0].tolist()
             result = res

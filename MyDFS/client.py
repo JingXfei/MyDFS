@@ -130,22 +130,22 @@ class Client:
             host_str = row['host_name']
             host_name_tr = get_hosts(host_str)
         
-        # # #对所有文件的编码进行排序（运行时间比较长，所以先存下来了）
-        # # #已保存，之后如果有新的数据集或到新机器上重新运行一次
-        # sort_table = pd.DataFrame(columns=['key'])
-        # sort_index = 0
-        # for root1, dirs, files in os.walk(local_path, topdown=False):
-        #     for name in files:
-        #         sort_table.loc[sort_index] = [encode_file(os.path.join(root1, name))]
-        #         sort_index += 1
-        # ################################
+        # #对所有文件的编码进行排序（运行时间比较长，所以先存下来了）
+        # #已保存，之后如果有新的数据集或到新机器上重新运行一次
+        sort_table = pd.DataFrame(columns=['key'])
+        sort_index = 0
+        for root1, dirs, files in os.walk(local_path, topdown=False):
+            for name in files:
+                sort_table.loc[sort_index] = [encode_file(os.path.join(root1, name))]
+                sort_index += 1
+        ################################
         # print(sort_table.iloc[:10])
-        # ################################
-        # file_index = sort_encode(sort_table)
-        # ################################
+        ################################
+        file_index = sort_encode(sort_table)
+        ################################
         # print(file_index.iloc[:10])
-        # ################################
-        # file_index.to_csv('sort_table.csv')
+        ################################
+        file_index.to_csv('sort_table.csv')
         
         file_sort = pd.read_csv('sort_table.csv')
         #   所有文件的长度
@@ -203,7 +203,7 @@ class Client:
 
                 # 选择当前sstable的地址
                 host_name = host_list[np.random.choice(len(host_list), dfs_replication, replace=False)]
-                blk_path = dfs_path + ".sstable{}.csv".format(40 * tabindex + ssindex)
+                blk_path = dfs_path + ".sstable{}".format(40 * tabindex + ssindex)
                 
                 # 存储到tablet
                 last_key = sstable['key'][len(sstable) - 1]
@@ -224,7 +224,7 @@ class Client:
             if not flag:
                 break
             # 当tablet存满到40行,发出去并存储到root
-            blk_path_tablet = dfs_path + ".tablet{}.csv".format(tabindex)
+            blk_path_tablet = dfs_path + ".tablet{}".format(tabindex)
             tablet.to_csv('tablet.csv', index=False)
             length_data = os.path.getsize('tablet.csv')
             fp_t = open('tablet.csv')
@@ -255,7 +255,7 @@ class Client:
 
             # 安排剩下的sstable存放的地址
             host_name_re = host_list[np.random.choice(len(host_list), dfs_replication, replace=False)]
-            blk_path_re = dfs_path + ".sstable{}.csv".format(ss_total_num - 1)
+            blk_path_re = dfs_path + ".sstable{}".format(ss_total_num - 1)
 
             # 增加一行,host_name_re，并发送
             last_sstable = pd.read_csv('ss.csv')
@@ -282,13 +282,13 @@ class Client:
             # 发送最后的root和tablet
             tablet.to_csv('tabletend.csv', index=False)
             root.to_csv('root.csv', index=False)
-            blk_path_tr = dfs_path + ".tablet{}.csv".format(tablet_total_num - 1)
+            blk_path_tr = dfs_path + ".tablet{}".format(tablet_total_num - 1)
             fpt = open('tabletend.csv')
             length_data_fpt = os.path.getsize('tabletend.csv')
             print(self.sendToHosts(host_name_tr, blk_path_tr, length_data_fpt, fpt))
             fpt.close()
             
-            blk_path_fr = dfs_path + ".root{}.csv".format(0)
+            blk_path_fr = dfs_path + ".root{}".format(0)
             fpr = open('root.csv')
             length_data_fpr = os.path.getsize('root.csv')
             print(self.sendToHosts(host_name_tr, blk_path_fr, length_data_fpr, fpr))
@@ -492,7 +492,7 @@ class Client:
         path = []
 
         # 调用getFatItem函数得到Fat表；并处理fat表不存在的情况
-        fat = getFatItem(dfs_path)
+        fat = self.getFatItem(dfs_path)
         if fat == "None":
             print("No this Fat!")
             return None
@@ -540,7 +540,7 @@ class Client:
         path = []
 
         # 调用getFatItem函数得到Fat表；并处理fat表不存在的情况
-        fat = getFatItem(dfs_path)
+        fat = self.getFatItem(dfs_path)
         if fat == "None":
             print("No this Fat!")
             return path
@@ -552,7 +552,7 @@ class Client:
             # 先进行bloomFilter，
             # 若校验失败即文件不存在，返回None；
             # 覆盖查询rootTable和tablet的功能
-            res_filter = bloomFilter(fat, dfs_path, row_key)
+            res_filter = self.bloomFilter(fat, dfs_path, row_key)
             res_filter = str(res_filter, encoding='utf-8')
             if res_filter == "None1":
                 print("Not exist in this BigTable")
@@ -590,7 +590,7 @@ class Client:
 
     def bloomFilter(self, fat, dfs_path, row_key):
         # 依据要查询的row_key生成两个index，传入bloomfilter所在位置进行校验；
-        index1,index2 = get_hash(new_encode_file)
+        index1,index2 = get_hash(row_key)
 
         end = '.bloom_filter'
 
@@ -604,14 +604,19 @@ class Client:
                 print("bloomFilter from "+host+"...",end='')
                 data_node_sock.connect((host, data_node_port))
                 table_path = dfs_path + end
+                print("step 1")
                 # 传输查询的table的路径、在B+树中的层数、行键
-                request = "bloomFilter {} {} {}".format(table_path, index_1, index_2, row_key)
+                print(table_path, index1, index2, row_key)
+                request = "bloomFilter {} {} {} {}".format(table_path, index1, index2, row_key)
                 data_node_sock.send(bytes(request, encoding='utf-8'))
+                print("step 2")
                 time.sleep(0.2)  # 两次传输需要间隔一段时间，避免粘包
                 res = data_node_sock.recv(BUF_SIZE)
                 data_node_sock.close()
+                print("step 3")
                 break
-            except:
+            except Exception as e:
+                print(e)
                 data_node_sock.close()
                 print(host+" error!")
                 if host == host_names[-1]:
@@ -621,7 +626,7 @@ class Client:
 
     def queryTable(self, cur_table, cur_layer, dfs_path, row_key):
         if cur_layer == 0:
-            end = ".root_tablet"
+            end = ".root"
             ind_col = "blk_no"
         elif cur_layer == 1:
             end = ".tablet"
@@ -759,7 +764,7 @@ class Client:
                         id = insert_path[1].iloc[0]['tablet_index']
                     else:
                         host_str = insert_path[0].iloc[0]['host_name'].replace(' ', '')
-                        end = '.root_tablet'
+                        end = '.root'
                         id = insert_path[0].iloc[0]['blk_no']
                     # 发送的content包含被删除的ID，新建立的两行的id0，id1
                     content = index+" "+index0+" "+index1+" "+row_key_1
