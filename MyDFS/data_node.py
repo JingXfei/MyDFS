@@ -24,6 +24,7 @@ import threading
 class DataNode:        
     def __init__(self):
         self.DN_end,self.TS_end = Pipe() # 用于进程之间通信
+        self.DN_end_d,self.TS_end_d = Pipe() # 用于进程之间通信
         self.data_node_pool = []
         self.tablet_server = 0 # 判断是否存在一个tabletServer
 
@@ -194,7 +195,7 @@ class DataNode:
             print("store done")
             f.close()
         else:
-            content = ""
+            content = b''
             print("append as bytes")
             while size_rec < length_data:
                 chunk_data = sock_fd.recv(BUF_SIZE)
@@ -254,6 +255,7 @@ class DataNode:
                     else:
                         data = fp.read(surplus)
                     data_node_sock.sendall(data)
+                fp.close()
             else:
                 loop = math.ceil(length_data/PIECE_SIZE)
                 surplus = length_data
@@ -275,7 +277,6 @@ class DataNode:
                         data_node_sock.sendall(bytes(data, encoding='utf-8'))
             res = data_node_sock.recv(BUF_SIZE)
             data_node_sock.close()
-            fp.close()
             return str(res, encoding = "utf-8"), True
         except Exception as e:
             print(e)
@@ -501,11 +502,12 @@ class DataNode:
 
     def update_hash(self, index0, index1, table_path):
         local_path = data_node_dir + table_path
-        with open(local_path) as f:
+        with open(local_path,'rb') as f:
             data = pkl.load(f)
         data[0][index0] = 1
         data[1][index1] = 1
-        pkl.dump(data, local_path)
+        with open(local_path, 'wb') as f:
+            pkl.dump(data, f)
         return "Done"
 
     def queryArea(self, sock_fd, table_path, row_key_begin, row_key_end):
@@ -549,9 +551,13 @@ class DataNode:
         if not self.tablet_server:
             # 不存在该tablet_server，则创建一个TS
             self.TS = TabletServer()
-            self.p = Process(target = self.TS.run, args = (self.TS_end,))
+            self.p = Process(target = self.TS.run, args = (self.TS_end, self.TS_end_d))
             self.p.start()
             self.tablet_server = 1
+            listen_TS = threading.Thread(target=DataNode.listen_TS, args=(self,))
+            listen_TS.setDaemon(True)
+            listen_TS.start()
+            listen_TS.join(5)
         try:
             self.DN_end.send(['read', local_path])
         except Exception as e:
@@ -566,20 +572,31 @@ class DataNode:
 
         local_path = data_node_dir + table_path
         # 接收数据
-        content = ""
+        content = b''
         size_rec = 0
         while size_rec < length_data:
             chunk_data = sock_fd.recv(BUF_SIZE)
             size_rec = size_rec + len(chunk_data)
-            content = content + str(chunk_data)
-
+            content = content + chunk_data
+        content = str(content, encoding='utf-8')
+        # print("Insert content: \n",content)
         log_path = local_path + ".log"
         # 创建日志文件
         # 可能涉及的指令为：
         # [cmd: insert]: row_key, local_path, content;
         # [cmd: delete]: row_key, local_path;
+        # 生成数据流路径；确保当前节点在数据流中为首位
+        host_names = get_hosts(host_str)
+        local = socket.gethostname()
+        n = np.where(host_names == local)[0][0]
+        if n != 0:
+            print("Exist an error for this is not the first host!")
+            index = [n]+[i for i in range(dfs_replication) if i != n]
+            host_names = host_names[index]
+        host_str = str(host_names).replace(' ', '')
+
         log = pd.DataFrame(columns = ['timestamp', 'cmd', 'localpath', 'row_key', 'content', 'other', 'isfinish'])
-        log.iloc[0] = [timestamp, 'insert', local_path, row_key, content, host_str, 0]
+        log.loc[0] = [timestamp, 'insert', local_path, row_key, content, host_str, 0]
         if not os.path.exists(log_path) or os.path.getsize(log_path) == 0:
             mode = 'w'
             log.to_csv(log_path, index=False)
@@ -588,46 +605,45 @@ class DataNode:
             mode = 'a'
             log.to_csv(log_path, index=False, mode = 'a', header = False)
             data = log.to_csv(index=False, header = False)
-
-        # 生成数据流路径；
-        host_names = get_hosts(host_str)
-        local = os.gethostname()
-        n = np.where(host_names == local)[0][0]
-        if n != 0:
-            print("Exist an error for this is not the first host!")
-            index = [n]+[i for i in range(dfs_replication) if i != n]
-            host_names = host_names[index]
-        host_str = str(host_names).replace(' ', '')
+        
         self.send(table_path+".log", len(data), host_names[1], host_str, 1, mode, content = data)
         
         # 传输命令到TS进程
-        self.DN_end.send(['log:', log])
+        self.DN_end.send(['log', log])
         data = self.DN_end.recv()
-        if data[0] == 'Split':
-            # 需要向后续节点发送新的数据，三个sstable
-            info = data[1]
-            index0 = info.iloc[0]['index0']
-            index1 = info.iloc[0]['index1']
-            length_data = os.path.getsize(log_path)
-            self.send(table_path+".log", length_data, host_names[1], host_str, 1)
-            filetype = table_path.split('.')[-1]
-            if filetype[0] == 's':
-                l = len(filetype)
-                table_path_0 = table_path[:-l]+'.sstable'+index0
-                table_path_1 = table_path[:-l]+'.sstable'+index1
-            else:
-                l = len(filetype)
-                table_path_0 = table_path[:-l]+'.tablet'+index0
-                table_path_1 = table_path[:-l]+'.tablet'+index1
-            length_data_0 = os.path.getsize(data_node_dir + table_path_0)
-            self.send(table_path_0, length_data_0, host_names[1], host_str, 1)
-            length_data_1 = os.path.getsize(data_node_dir + table_path_1)
-            self.send(table_path_1, length_data_1, host_names[1], host_str, 1)
-            return data[1].to_csv(index=False)
-        elif data[0] == 'Lastkey':
-            # 不需要向后续节点发送新的数据，但返回data[1]用于lablet等的插入
+        if data[0] != 'Done':
             return data[1].to_csv(index=False)
         return data[0]
+
+    def listen_TS(self):
+        # 用于监听TS的输出
+        while True:
+            res = self.DN_end_d.recv()
+            cmd = res[0]
+            data = res[1]
+            print(cmd + " from TabletServer")
+            handle_TS = threading.Thread(target=DataNode.handle_TS, args=(self,cmd,data))
+            handle_TS.setDaemon(True)
+            handle_TS.start()
+            handle_TS.join(5)
+
+    def handle_TS(self, cmd, data):
+        l = len(data_node_dir)
+        local_path = data[0]
+        blk_path = local_path[l:]
+        host_str = data[1]
+        host_names = get_hosts(host_str)
+        if cmd == "store":
+            length_data = os.path.getsize(local_path)
+            self.send(blk_path, length_data, host_names[1], host_str, 1)
+        elif cmd == "write_log":
+            length_data = os.path.getsize(local_path+'.log')
+            self.send(blk_path+'.log', length_data, host_names[1], host_str, 1)
+        elif cmd == "append_log":
+            content = data[2]
+            self.send(blk_path+".log", len(content), host_names[1], host_str, 1, mode = 'a', content = content)
+        else:
+            print("Undefined command: ",cmd)
 
 class TabletServer:
     def __init__(self):
@@ -636,9 +652,11 @@ class TabletServer:
         self.logs = {}
         self.logs_done = {}
         self.times = {}
+        self.host_str = {}
 
-    def run(self, TS_end):
+    def run(self, TS_end, TS_end_d):
         self.TS_end = TS_end
+        self.TS_end_d = TS_end_d
         while True:
             operation = self.TS_end.recv()
             handle = threading.Thread(target=TabletServer.handle, args=(self,operation))
@@ -687,10 +705,11 @@ class TabletServer:
             # 检查是否本地记录的log均已完成，若未完成则读入对应的任务到内存log中
             if log_temp.shape[0] > 0:
                 if log_temp.iloc[-1]['isfinish'] == 0:
-                    end = log_temp[log_temp.isfinish == '0'].index.tolist()[-1]
+                    end = log_temp[log_temp.isfinish == 0].index.tolist()[-1]
                     op_df = log_temp.iloc[end+1:]
-                    for i in range(op_df.shape[0]):
-                        self.process_log(op_df.iloc[i])
+                    # 调试的时候先把这项关掉
+                    # for i in range(op_df.shape[0]):
+                    #     self.process_log(op_df.iloc[i])
         else:
             print("May not exist log now!")
 
@@ -701,13 +720,15 @@ class TabletServer:
                 del self.times[local_path]
                 break
             cur_time = time.time()
-            # print("Rows in logs done of "+local_path+": \n", self.logs_done[local_path].shape[0])
+            
             if self.logs_done[local_path].shape[0] == 0:
                 delta = cur_time - self.times[local_path]
+                print(delta)
             else:
                 delta = cur_time - float(self.logs_done[local_path].iloc[-1]['timestamp'])
             if delta > MAX_WAIT:
                 # 一定时间无操作，存回本地，并删除对应tablet
+                print("del ",local_path)
                 self.store_tablet(local_path)
                 self.store_log(local_path)
                 del self.tablets[local_path]
@@ -717,7 +738,7 @@ class TabletServer:
                 break
             time.sleep(10)
 
-    def process_log(op):
+    def process_log(self, op):
         # ['timestamp', 'cmd', 'localpath', 'row_key', 'content', 'other', 'isfinish']
         timestamp = op['timestamp']
         cmd = op['cmd']
@@ -730,25 +751,27 @@ class TabletServer:
         df = pd.DataFrame(columns = ['last_key0', 'last_key1', 'index0', 'index1'])
 
         if cmd == "insert":
+            self.host_str[local_path] = other
             result,df = self.insert(local_path, row_key, content, other, df)
         else:
             result = "Done"
         n = self.logs_done[local_path].shape[0]
-        self.logs_done[local_path].iloc[n] = [timestamp, cmd, local_path, row_key, content, other, 1]
+        self.logs_done[local_path].loc[n] = [timestamp, cmd, local_path, row_key, content, other, 1]
         if result == "Split":
             # 确认任务完成之后，由于分裂，存储log并在内存中删除
             self.store_log(local_path)
             print(self.logs_done[local_path])
             del self.logs[local_path]
             del self.logs_done[local_path]
+            del self.host_str[local_path]
         return [result,df]
 
     def log(self, data):
         # 日志记录并进行具体操作
         op_df = data
-        self.read_tablet(local_path)
         local_path = op_df.iloc[0]['localpath']
-        self.logs[local_path] = pd.concat([self.logs[local_path], op_df], index=False)
+        self.read_tablet(local_path)
+        self.logs[local_path] = pd.concat([self.logs[local_path], op_df], ignore_index=False)
         result = self.process_log(op_df.iloc[0])
         return result
 
@@ -757,15 +780,16 @@ class TabletServer:
         # sstable = pd.DataFrame(columns=['key', 'content'])
         # tablet = pd.DataFrame(columns=['ss_index', 'host_name', 'last_key'])
         # root = pd.DataFrame(columns=['tablet_index', 'host_name','last_key'])
-        data = self.tablets[local_path].iloc[:-1]
-        last = self.tablets[local_path].iloc[[-1]]
-        marker = local_path.split(' ')[-1]
+        marker = local_path.split('.')[-1]
         if marker[0] == 's':
+            data = self.tablets[local_path].iloc[:-1]
+            last = self.tablets[local_path].iloc[[-1]]
             # 插入的对象是sstable
             temp1 = data[data.key <= row_key]
             temp2 = data[data.key > row_key]
+            print(content)
             new = pd.DataFrame({'key': [row_key], 'content': [content]})
-            self.tablets[local_path] = pd.concat([temp1,new,temp2,last], ignore_index=True)
+            self.tablets[local_path] = pd.concat([temp1,new,temp2,last], ignore_index=True, sort=False)
             index = local_path.split('.')[-1][len('sstable'):]
             
             if self.tablets[local_path].shape[0] > MAX_ROW:
@@ -779,7 +803,9 @@ class TabletServer:
 
                 n = self.tablets[local_path].shape[0]
                 self.tablets[local_path_0] = self.tablets[local_path].iloc[:n//2]
+                self.host_str[local_path_0] = self.host_str[local_path]
                 self.tablets[local_path_1] = self.tablets[local_path].iloc[n//2:]
+                self.host_str[local_path_1] = self.host_str[local_path]
                 self.logs[local_path_0] = pd.DataFrame(columns = ['timestamp', 'cmd', 'localpath', 'row_key', 'content', 'other', 'isfinish'])
                 self.logs[local_path_1] = pd.DataFrame(columns = ['timestamp', 'cmd', 'localpath', 'row_key', 'content', 'other', 'isfinish'])
                 self.logs_done[local_path_0] = pd.DataFrame(columns = ['timestamp', 'cmd', 'localpath', 'row_key', 'content', 'other', 'isfinish'])
@@ -804,7 +830,7 @@ class TabletServer:
                 check_times.setDaemon(True)
                 check_times.start()
 
-                df.iloc[0] = [last_key0, last_key1, index0, index1]
+                df.loc[0] = [last_key0, last_key1, index0, index1]
                 return ("Split",df)
 
             if temp2.shape[0] == 0:
@@ -814,13 +840,15 @@ class TabletServer:
                 last_key0 = row_key
                 index1 = '-1'
                 last_key1 = '-1'
-                df.iloc[0] = [last_key0, last_key1, index0, index1]
+                df.loc[0] = [last_key0, last_key1, index0, index1]
                 return ("Lastkey",df)
 
             return ("Done",df)
         elif marker[0] == 't':
             # 插入的对象是tablet，则需要删掉一行增加两行；
             # content(index, index0, index1, row_key_1)需要转换
+            data = self.tablets[local_path]
+            # content = str(content, encoding='utf-8')
             temp = content.split(" ")
             index_del = temp[0]
             index0 = temp[1]
@@ -829,14 +857,16 @@ class TabletServer:
 
             if index1 == '-1':
                 # 更改原来行的last_key
+                
                 temp1 = data[data.last_key <= row_key]
                 temp2 = data[data.last_key > row_key]
                 temp1.iloc[-1,[0,2]] = [index0, row_key]
                 self.tablets[local_path] = pd.concat([temp1,temp2], ignore_index=True)
-                print("update rows 1 in tablet:\n",temp1.iloc[[-1]])
+                print("update rows 1 in tablet:\n",temp1.iloc[-1]['last_key'])
                 return ("Done", df)
             else:
                 # 删除原来行并加入两行
+                data = self.tablets[local_path]
                 temp1 = data[data.last_key <= row_key1]
                 temp2 = data[data.last_key > row_key1]
                 new = temp1.iloc[[-1]]
@@ -857,7 +887,9 @@ class TabletServer:
 
                 n = self.tablets[local_path].shape[0]
                 self.tablets[local_path_0] = self.tablets[local_path].iloc[:n//2]
+                self.host_str[local_path_0] = self.host_str[local_path]
                 self.tablets[local_path_1] = self.tablets[local_path].iloc[n//2:]
+                self.host_str[local_path_1] = self.host_str[local_path]
                 self.logs[local_path_0] = pd.DataFrame(columns = ['timestamp', 'cmd', 'localpath', 'row_key', 'content', 'other', 'isfinish'])
                 self.logs[local_path_1] = pd.DataFrame(columns = ['timestamp', 'cmd', 'localpath', 'row_key', 'content', 'other', 'isfinish'])
                 self.logs_done[local_path_0] = pd.DataFrame(columns = ['timestamp', 'cmd', 'localpath', 'row_key', 'content', 'other', 'isfinish'])
@@ -880,13 +912,14 @@ class TabletServer:
                 check_times.setDaemon(True)
                 check_times.start()
 
-                df.iloc[0] = [last_key0, last_key1, index0, index1]
+                df.loc[0] = [last_key0, last_key1, index0, index1]
                 return ("Split",df)
                 
             return ("Done",df)
         else:
             # 插入的对象是root_tablet
             # content(tablet_index, host_str)需要转换为tablet_index和host_name(list)
+            # content = str(content, encoding='utf-8')
             temp = content.split(" ")
             index_del = temp[0]
             index0 = temp[1]
@@ -903,13 +936,19 @@ class TabletServer:
             return ("Done",df)
 
     def store_tablet(self, local_path):
-        self.tablets[local_path].to_csv(local_path, index=False)
+        print('self.logs_done[local_path].shape[0]',self.logs_done[local_path].shape[0])
+        if self.logs_done[local_path].shape[0] > 0:
+            self.tablets[local_path].to_csv(local_path, index=False)
+            self.TS_end_d.send(['store', [local_path, self.host_str[local_path]]])
 
     def store_log(self, local_path):
-        if not os.path.exists(local_path+'.log') or os.path.getsize(local_path+'.log') == 0:
-            self.logs_done[local_path].to_csv(local_path+'.log', index=False)
-        else:
-            self.logs_done[local_path].to_csv(local_path+'.log', index=False, mode = 'a', header = False)
+        if self.logs_done[local_path].shape[0] > 0:
+            if not os.path.exists(local_path+'.log') or os.path.getsize(local_path+'.log') == 0:
+                self.logs_done[local_path].to_csv(local_path+'.log', index=False)
+                self.TS_end_d.send(['write_log', [local_path+'.log', self.host_str[local_path]]])
+            else:
+                self.logs_done[local_path].to_csv(local_path+'.log', index=False, mode = 'a', header = False)
+                self.TS_end_d.send(['append_log', [local_path+'.log', self.host_str[local_path], self.logs_done[local_path].to_csv(index=False, header = False)]])
 
     def query(self, data):
         local_path = data[0]

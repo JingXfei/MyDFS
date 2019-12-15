@@ -268,7 +268,7 @@ class Client:
 
             # 在最后的sstable后面增加一行None ,发送最后的sstable
             last_key = sstable['key'][len(sstable) - 1]
-            sstable['key'][len(sstable)] = ['end', 'None']
+            sstable.loc[len(sstable)] = ['end', 'None']
             
             sstable.to_csv('ss.csv', index=False)
             length_data = os.path.getsize('ss.csv')
@@ -278,7 +278,7 @@ class Client:
             
             # 将最后的sstable存入到tablet表中
             tablet.loc[len(tablet)] = [ss_total_num - 1, host_name_re, last_key]
-            root.loc[len(root)] = [tablet_total_num - 1, host_name_re, last_key]
+            root.loc[len(root)] = [tablet_total_num - 1, host_name_tr, last_key]
             # 发送最后的root和tablet
             tablet.to_csv('tabletend.csv', index=False)
             root.to_csv('root.csv', index=False)
@@ -587,10 +587,10 @@ class Client:
         sstable = pd.read_csv(StringIO(content))
         path.append(sstable)
 
-        print("Root: \n",path[0])
-        print("Tablet: \n",path[1])
-        print("Sstable: \n",path[2])
-        print("content: \n",path[3])
+        print("Root: \n",path[0].iloc[0,:2])
+        print("Tablet: \n",path[1].iloc[0,:2])
+        print("Sstable: \n",path[2].iloc[0,:2])
+        print("content: \n",path[3].iloc[0,[0]])
         return path
 
     def bloomFilter(self, fat, dfs_path, row_key):
@@ -724,7 +724,7 @@ class Client:
             # 此时path为[fat, root_tablet, tablet, sstable]四层
             host_str = insert_path[2].iloc[0]['host_name'].replace(' ', '')
             end = '.sstable'
-            id = insert_path[2].iloc[0]['ss_index']
+            id = insert_path[2].iloc[0,0]
             insert_layer = 2
             while True:
                 # 需要插入到指定sstable中，并处理可能的分裂
@@ -739,20 +739,25 @@ class Client:
                 # 和host(DN)通信发送信息[dfs_path, row_key, timestamp, host_str, length_data]
                 try:
                     data_node_sock = socket.socket()
-                    print("insert to "+ host + ", insert layer: " + insert_layer,end='.\n')
+                    print("insert to "+ host + ", insert layer: {}".format(insert_layer),end='.\n')
                     data_node_sock.connect((host, data_node_port))
                     request = "insert {} {} {} {} {}".format(table_path, row_key, timestamp, host_str, length_data)
                     data_node_sock.send(bytes(request, encoding='utf-8'))
                     time.sleep(0.2)  # 两次传输需要间隔一段时间，避免粘包
-                    data_node_sock.send(bytes(content, encoding='utf-8'))
+                    if isinstance(content, bytes):
+                        data_node_sock.send(content)
+                    else:
+                        data_node_sock.send(bytes(content, encoding='utf-8'))
                     res = data_node_sock.recv(BUF_SIZE)
                     data_node_sock.close()
                     insert_layer = insert_layer - 1
-                except:
+                except Exception as e:
                     data_node_sock.close()
                     print(host+" error!")
+                    print(e)
                 # 接收DataNode信息，判断继续插入（循环这几步）或结束
                 res = str(res, encoding='utf-8')
+                print(res)
                 if res == 'Done':
                     break
                 else:
@@ -765,17 +770,17 @@ class Client:
                     if end == '.sstable':
                         host_str = insert_path[1].iloc[0]['host_name'].replace(' ', '')
                         end = '.tablet'
-                        id = insert_path[1].iloc[0]['tablet_index']
+                        id = insert_path[1].iloc[0,0] # index
                     else:
                         host_str = insert_path[0].iloc[0]['host_name'].replace(' ', '')
                         end = '.root'
-                        id = insert_path[0].iloc[0]['blk_no']
+                        id = insert_path[0].iloc[0,0] # blk_no
                     # 发送的content包含被删除的ID，新建立的两行的id0，id1
-                    content = index+" "+index0+" "+index1+" "+row_key_1
+                    content = '{} {} {} {}'.format(index, index0, index1, row_key_1)
                     length_data = len(content)
             host_str = get_hosts(insert_path[0].iloc[0]['host_name'])
             bf_path = dfs_path + '.bloom_filter'
-            print(update_hash(encode_file(local_path), host_str, bf_path))
+            print(self.update_hash(encode_file(local_path), host_str, bf_path))
 
     def update_hash(self,new_encode_file,host_name_tr,bf_path):
         h1_index,h2_index=get_hash(new_encode_file)

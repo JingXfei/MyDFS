@@ -151,7 +151,8 @@ class Master:
             f_csv.writerows(row)
 
     # 还需要增加的必要功能：
-    # 1. 识别query的具体操作，并向DN通知['createTS', table_path]; 目前的cmd有query和insert，但是都只需要告诉DN读取对应的tablet即可
+    # 1. 识别query的具体操作，并向DN通知['createTS', table_path]; 
+    #       目前的cmd有query和insert，但是都只需要告诉DN读取对应的tablet即可
     # 3. 接收返回的内容(True)，再返回给Client，作为对Client一次成功的调度。
     # ----2. 接收DN返回值[timestamp, isfinish]，作为对应任务完成标志。
     # 可能增加的功能：

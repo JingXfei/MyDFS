@@ -10,9 +10,9 @@ data_node_dir = "./MyDFS/dfs/data"
 map_reduce_code_dir = '/.code/'
 map_reduce_res_dir = '/.res/'
 
-data_node_port = 11309  # DataNode程序监听端口
-name_node_port = 21309  # NameNode监听端口
-master_port = 26309 # Master监听端口
+data_node_port = 11319  # DataNode程序监听端口
+name_node_port = 21319  # NameNode监听端口
+master_port = 26319 # Master监听端口
 
 # 集群中的主机列表
 # host_list = ['localhost']  
@@ -35,7 +35,7 @@ MIN_ROW = 32
 MAX_ROW = 64
 
 # TabletServer的最大等待时长
-MAX_WAIT = 300
+MAX_WAIT = 10
 
 def get_hosts(host_str):
     # 由字符串找到hosts，如"['thumm01','thumm02','thumm03']"中找到三个
