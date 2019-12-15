@@ -503,7 +503,7 @@ class Client:
         # 查询roottablet和tablet中所在位置
         # row_key小于整棵树最大的last_key，则返回None；
         # 否则返回Tablet中对应的ssTablet所在一行。
-        tablet = queryTable(fat, 0, dfs_path, row_key) # 得到tablet中对应的一行；
+        tablet = self.queryTable(fat, 0, dfs_path, row_key) # 得到tablet中对应的一行；
         tablet = str(tablet, encoding='utf-8')
         # if tablet == "None2":
         #     print("Bigger than Biggest, area not in this BigTable")
@@ -514,15 +514,17 @@ class Client:
             path.append(tablet.iloc[[i]])
 
         while True:
-            res,nex = queryTableArea(path[-1], dfs_path, row_key, row_key_2) # 得到sstable中一个区域的内容；
+            res,nex = self.queryTableArea(path[-1], dfs_path, row_key, row_key_2) # 得到sstable中一个区域的内容；
 
             print("Result: \n{}".format(res)) # 一次只打印一个sstable的，再将该空间重新利用
+            
             nex = pd.read_csv(StringIO(nex))
+            print(nex)
             if nex.shape[0] == 0:
                 break
             else:
                 tablet = pd.DataFrame(columns=['ss_index', 'host_name'])
-                tablet.iloc[0] = [int(nex.iloc[0]['key'][len("sstable"):]), nex.iloc[0]['content']]
+                tablet.loc[0] = [nex.iloc[0]['key'], nex.iloc[0]['content']]
                 path.append(tablet)
 
     def queryOne(self, dfs_path, local_path, bloom_filter = True):
@@ -569,7 +571,7 @@ class Client:
             # 查询roottablet和tablet中所在位置
             # row_key小于整棵树最大的last_key，则返回None；
             # 否则返回Tablet中对应的ssTablet所在一行。
-            tablet = queryTable(fat, 0, dfs_path, row_key) # 得到tablet中对应的一行；
+            tablet = self.queryTable(fat, 0, dfs_path, row_key) # 得到tablet中对应的一行；
             tablet = str(tablet, encoding='utf-8')
             if tablet == "None2":
                 print("Bigger than Biggest, area not in this BigTable")
@@ -579,13 +581,16 @@ class Client:
             for i in range(tablet.shape[0]):
                 path.append(tablet.iloc[[i]])
 
-        sstable = queryTable(path[-1], 2, dfs_path, row_key) # 得到sstable中对应的一行；
+        sstable = self.queryTable(path[-1], 2, dfs_path, row_key) # 得到sstable中对应的一行；
         content = str(sstable, encoding='utf-8')
         print("Content: \n{}".format(content))
-        sstable = pd.read_csv(StringIO(sstable))
+        sstable = pd.read_csv(StringIO(content))
         path.append(sstable)
 
-        print(path)
+        print("Root: \n",path[0])
+        print("Tablet: \n",path[1])
+        print("Sstable: \n",path[2])
+        print("content: \n",path[3])
         return path
 
     def bloomFilter(self, fat, dfs_path, row_key):
@@ -640,7 +645,7 @@ class Client:
         host_names = get_hosts(host_str)
 
         # 传输查询的table的路径、在B+树中的层数、行键
-        table_path = dfs_path + end + "{}".format(row[ind_col])
+        table_path = dfs_path + end + '{}'.format(row[0]) # 由于目前index有些混乱，使用0去找到列index
         request = "query {} {} {}".format(table_path, cur_layer, row_key)
         ################################################################
         # res = self.queryMaster(request)
@@ -674,7 +679,7 @@ class Client:
         host_names = get_hosts(host_str)
 
         # 传输查询的table的路径、开始行键、结束行键
-        table_path = dfs_path + ".sstable{}".format(row['ss_index'])
+        table_path = dfs_path + ".sstable{}".format(row[0]) # 同queryTable函数，由于index名称不定，暂时用0
         request = "queryArea {} {} {}".format(table_path, row_key_begin, row_key_end)
         ################################################################
         # res = self.queryMaster(request)
@@ -711,8 +716,7 @@ class Client:
         # 此处应该调用行键编码函数进行编码 #################################################
         row_key = encode_file(local_path) # 相对路径？绝对路径？
         length_data = os.path.getsize(local_path)
-        with open(local_path, 'r') as f:
-            content = f.read(length_data)
+        content = get_content(local_path)
         insert_path = self.queryOne(dfs_path, local_path, bloom_filter = False)
         if len(insert_path) == 0:
             print("Not exist Table in this dfs_path")
@@ -769,9 +773,9 @@ class Client:
                     # 发送的content包含被删除的ID，新建立的两行的id0，id1
                     content = index+" "+index0+" "+index1+" "+row_key_1
                     length_data = len(content)
-        host_str = get_hosts(insert_path[0].iloc[0]['host_name'])
-        bf_path = dfs_path + '.bloom_filter'
-        print(update_hash(encode_file(local_path), host_str, bf_path))
+            host_str = get_hosts(insert_path[0].iloc[0]['host_name'])
+            bf_path = dfs_path + '.bloom_filter'
+            print(update_hash(encode_file(local_path), host_str, bf_path))
 
     def update_hash(self,new_encode_file,host_name_tr,bf_path):
         h1_index,h2_index=get_hash(new_encode_file)
@@ -934,7 +938,7 @@ elif cmd == "-queryArea":
         dfs_path = argv[2]
         local_path_1 = argv[3]
         local_path_2 = argv[4]
-        client.queryOne(dfs_path, local_path_1, local_path_2)
+        client.queryArea(dfs_path, local_path_1, local_path_2)
     else:
         print("Usage: python client.py -queryArea <dfs_path> <local_path_begin> <local_path_end>")
 elif cmd == "-ssls":
@@ -945,7 +949,7 @@ elif cmd == "-ssls":
     else:
         print("Usage: python client.py -ssls <dfs_path> <local_path>")
 elif cmd == "-insert":
-    if argc == 2:
+    if argc == 3:
         local_path = argv[2]
         dfs_path = argv[3]
         client.insert(local_path, dfs_path)

@@ -580,7 +580,7 @@ class DataNode:
         # [cmd: delete]: row_key, local_path;
         log = pd.DataFrame(columns = ['timestamp', 'cmd', 'localpath', 'row_key', 'content', 'other', 'isfinish'])
         log.iloc[0] = [timestamp, 'insert', local_path, row_key, content, host_str, 0]
-        if not os.path.exists(log_path):
+        if not os.path.exists(log_path) or os.path.getsize(log_path) == 0:
             mode = 'w'
             log.to_csv(log_path, index=False)
             data = log.to_csv(index=False)
@@ -641,7 +641,6 @@ class TabletServer:
         self.TS_end = TS_end
         while True:
             operation = self.TS_end.recv()
-            print(operation)
             handle = threading.Thread(target=TabletServer.handle, args=(self,operation))
             handle.setDaemon(True)
             handle.start()
@@ -649,6 +648,7 @@ class TabletServer:
             
     def handle(self, operation):
         cmd = operation[0]
+        print("Cmd to TS:\n", cmd)
         data = operation[1]
         if cmd == 'read':
             response = self.read_tablet(data)
@@ -660,12 +660,12 @@ class TabletServer:
             response = self.query_area(data)
         else:
             response = "May be an error, here is else."
-            print(response)
+            print("Response of TS:\n", response)
         self.TS_end.send(response)
     
     def read_tablet(self, local_path):
         if local_path in self.tablets.keys():
-            print("has loaded to Mem")
+            print("Has loaded to mem: \n", local_path)
             return True
         # 读取tablet顺便生成对应的log，一个0行的df
         self.tablets[local_path] = pd.read_csv(local_path)
@@ -682,21 +682,26 @@ class TabletServer:
     def check_tablet(self,local_path):
         # 用于检查对应tablet在磁盘的log，看读取的tablet是否是最新的。
         log_path = local_path + ".log"
-        try:
+        if os.path.exists(log_path) and os.path.getsize(log_path) > 0:
             log_temp = pd.read_csv(log_path)
             # 检查是否本地记录的log均已完成，若未完成则读入对应的任务到内存log中
-            end = log_temp[log_temp.isfinish == '0'].index.tolist()[-1]
-            op_df = log_temp.iloc[end+1:]
-            for i in range(op_df.shape[0]):
-                self.process_log(op_df.iloc[i])
-        except Exception as e:
+            if log_temp.shape[0] > 0:
+                if log_temp.iloc[-1]['isfinish'] == 0:
+                    end = log_temp[log_temp.isfinish == '0'].index.tolist()[-1]
+                    op_df = log_temp.iloc[end+1:]
+                    for i in range(op_df.shape[0]):
+                        self.process_log(op_df.iloc[i])
+        else:
             print("May not exist log now!")
-            print(e)
 
     def check_times(self, local_path):
         # 循环计算与上次被访问的时间，时间过长则存回磁盘
         while True:
+            if local_path not in self.logs_done.keys():
+                del self.times[local_path]
+                break
             cur_time = time.time()
+            # print("Rows in logs done of "+local_path+": \n", self.logs_done[local_path].shape[0])
             if self.logs_done[local_path].shape[0] == 0:
                 delta = cur_time - self.times[local_path]
             else:
@@ -709,6 +714,7 @@ class TabletServer:
                 del self.logs[local_path]
                 del self.logs_done[local_path]
                 del self.times[local_path]
+                break
             time.sleep(10)
 
     def process_log(op):
@@ -729,7 +735,7 @@ class TabletServer:
             result = "Done"
         n = self.logs_done[local_path].shape[0]
         self.logs_done[local_path].iloc[n] = [timestamp, cmd, local_path, row_key, content, other, 1]
-        if result != "Done":
+        if result == "Split":
             # 确认任务完成之后，由于分裂，存储log并在内存中删除
             self.store_log(local_path)
             print(self.logs_done[local_path])
@@ -788,6 +794,15 @@ class TabletServer:
                 self.store_tablet(local_path_1)
                 self.store_tablet(local_path) # 目前还是先保存一下
                 del self.tablets[local_path]
+
+                self.times[local_path_0] = time.time()
+                check_times = threading.Thread(target=TabletServer.check_times, args=(self,local_path_0))
+                check_times.setDaemon(True)
+                check_times.start()
+                self.times[local_path_1] = time.time()
+                check_times = threading.Thread(target=TabletServer.check_times, args=(self,local_path_1))
+                check_times.setDaemon(True)
+                check_times.start()
 
                 df.iloc[0] = [last_key0, last_key1, index0, index1]
                 return ("Split",df)
@@ -856,6 +871,15 @@ class TabletServer:
                 self.store_tablet(local_path) # 目前还是先保存一下
                 del self.tablets[local_path]
 
+                elf.times[local_path_0] = time.time()
+                check_times = threading.Thread(target=TabletServer.check_times, args=(self,local_path_0))
+                check_times.setDaemon(True)
+                check_times.start()
+                self.times[local_path_1] = time.time()
+                check_times = threading.Thread(target=TabletServer.check_times, args=(self,local_path_1))
+                check_times.setDaemon(True)
+                check_times.start()
+
                 df.iloc[0] = [last_key0, last_key1, index0, index1]
                 return ("Split",df)
                 
@@ -870,7 +894,7 @@ class TabletServer:
             
             temp1 = data[data.last_key < row_key]
             temp2 = data[data.last_key >= row_key]
-            new = temp2.iloc[0]
+            new = temp2.iloc[[0]]
             new.iloc[0,[0,2]] = [index0,row_key]
             temp2.iloc[0,0] = index1
             print("new rows 1 in tablet:\n",new)
@@ -882,7 +906,10 @@ class TabletServer:
         self.tablets[local_path].to_csv(local_path, index=False)
 
     def store_log(self, local_path):
-        self.logs_done[local_path].to_csv(local_path+'.log', index=False, mode = 'a', header = False)
+        if not os.path.exists(local_path+'.log') or os.path.getsize(local_path+'.log') == 0:
+            self.logs_done[local_path].to_csv(local_path+'.log', index=False)
+        else:
+            self.logs_done[local_path].to_csv(local_path+'.log', index=False, mode = 'a', header = False)
 
     def query(self, data):
         local_path = data[0]
@@ -892,22 +919,21 @@ class TabletServer:
         tablet = self.tablets[local_path]
         if cur_layer == 0:
             # 要查讯对应的row_key在哪一行下；
-            print(row_key, tablet.iloc[-1]['last_key'])
+            print("Last_key of root: \n", tablet.iloc[-1]['last_key'])
             if row_key > tablet.iloc[-1]['last_key']:
                 # 大于树中存储数据的最大值；
                 result = tablet.iloc[[-1]]
             else:
                 result = tablet[tablet.last_key >= row_key].iloc[[0]]
-                print(tablet[tablet.last_key >= row_key])
             tablet_id = result.iloc[0]['tablet_index']
             l = len('.root0')
             new_path = local_path[:-l]+".tablet{}".format(tablet_id)
             ss_info = self.query([new_path, 1, row_key])
 
             res = pd.DataFrame(columns = ['index', 'host_name', 'last_key'])
-            print(result,ss_info)
-            res.iloc[0] = result.iloc[0].tolist()
-            res.iloc[1] = ss_info.iloc[0].tolist()
+            # print(result,ss_info)
+            res.loc[0] = result.iloc[0].tolist()
+            res.loc[1] = ss_info.iloc[0].tolist()
             result = res
         elif cur_layer == 1:
             if row_key > tablet.iloc[-1]['last_key']:
@@ -916,11 +942,11 @@ class TabletServer:
             else:
                 result = tablet[tablet.last_key >= row_key].iloc[[0]]
         else:
-            if row_key > tablet.iloc[-1]['last_key']:
+            if row_key > tablet.iloc[-2]['key']:
                 # 大于树中存储数据的最大值；
                 result = tablet.iloc[[-2]]
             else:
-                result = tablet[tablet.last_key >= row_key].iloc[[0]]
+                result = tablet[tablet.key >= row_key].iloc[[0]]
             ################################################################
             # 较大文件的query需要考虑（还未完成）                               #
             ################################################################
@@ -950,11 +976,11 @@ class TabletServer:
             result = result[result.key <= row_key_end]
 
         # 判断是否需要读下一个sstable
-        next_judge = pd.DataFrame()
+        next_judge = pd.DataFrame(columns = ['key', 'content'])
         if result.shape[0] > 0:
             if result.iloc[-1]['key'] == data.iloc[-1]['key']:
                 next_judge = next_sstable
-        return [result, nex_judge]
+        return [result, next_judge]
 
 # 创建DataNode对象并启动
 data_node = DataNode()
