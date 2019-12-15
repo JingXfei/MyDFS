@@ -132,27 +132,21 @@ class Client:
         
         # #对所有文件的编码进行排序（运行时间比较长，所以先存下来了）
         # #已保存，之后如果有新的数据集或到新机器上重新运行一次
+        begin = time.time()
         sort_table = pd.DataFrame(columns=['key'])
         sort_index = 0
         for root1, dirs, files in os.walk(local_path, topdown=False):
             for name in files:
                 sort_table.loc[sort_index] = [encode_file(os.path.join(root1, name))]
                 sort_index += 1
-        ################################
-        # print(sort_table.iloc[:10])
-        ################################
         file_index = sort_encode(sort_table)
-        ################################
-        # print(file_index.iloc[:10])
-        ################################
         file_index.to_csv('sort_table.csv')
+        end = time.time()
+        print("Time of sorting: ", end-begin)
         
         file_sort = pd.read_csv('sort_table.csv')
         #   所有文件的长度
         all_len = len(file_sort)
-        ################################
-        # print(file_sort.iloc[:10])
-        ################################
         
         #   定义bloomfilter,更新hash list，并传给host_name_tr
         bloom=BloomFilter(all_len)
@@ -178,8 +172,6 @@ class Client:
         tablet_total_num = tablet_num + bool(tablet_rest)
         
         flag = True
-
-        # print(tablet_total_num) # 1
         
         for tabindex in range(tablet_total_num):
             tablet = pd.DataFrame(columns=['ss_index', 'host_name', 'last_key'])
@@ -218,7 +210,6 @@ class Client:
                     print(self.sendToHosts(host_name0, blk_path0, length_data, fp))
                     fp.close()
                 
-                # print(sstable) # 1
                 # 将当前的sstable存放到ss.csv中(一个临时文件，不断被覆盖的)
                 sstable.to_csv('ss.csv', index=False)
             if not flag:
@@ -505,9 +496,6 @@ class Client:
         # 否则返回Tablet中对应的ssTablet所在一行。
         tablet = self.queryTable(fat, 0, dfs_path, row_key) # 得到tablet中对应的一行；
         tablet = str(tablet, encoding='utf-8')
-        # if tablet == "None2":
-        #     print("Bigger than Biggest, area not in this BigTable")
-        #     return path
         print("Next table: \n{}".format(tablet))
         tablet = pd.read_csv(StringIO(tablet))
         for i in range(tablet.shape[0]):
@@ -515,9 +503,7 @@ class Client:
 
         while True:
             res,nex = self.queryTableArea(path[-1], dfs_path, row_key, row_key_2) # 得到sstable中一个区域的内容；
-
             print("Result: \n{}".format(res)) # 一次只打印一个sstable的，再将该空间重新利用
-            
             nex = pd.read_csv(StringIO(nex))
             print(nex)
             if nex.shape[0] == 0:
@@ -546,7 +532,7 @@ class Client:
         if fat == "None":
             print("No this Fat!")
             return path
-        print("Next table: \n{}".format(fat))
+        print("Root tablet: \n{}".format(fat))
         fat = pd.read_csv(StringIO(fat))
         path.append(fat)
 
@@ -562,7 +548,7 @@ class Client:
             # elif res_filter == "None2":
             #     print("Bigger than Biggest, area not in this BigTable")
             else:
-                print("Next table: \n{}".format(res_filter))
+                print("Tablet and Sstablet: \n{}".format(res_filter))
                 tablet = pd.read_csv(StringIO(res_filter))
                 for i in range(tablet.shape[0]):
                     path.append(tablet.iloc[[i]])
@@ -573,10 +559,10 @@ class Client:
             # 否则返回Tablet中对应的ssTablet所在一行。
             tablet = self.queryTable(fat, 0, dfs_path, row_key) # 得到tablet中对应的一行；
             tablet = str(tablet, encoding='utf-8')
-            if tablet == "None2":
-                print("Bigger than Biggest, area not in this BigTable")
-                return path
-            print("Next table: \n{}".format(tablet))
+            # if tablet == "None2":
+            #     print("Bigger than Biggest, area not in this BigTable")
+            #     return path
+            print("Tablet and Sstablet: \n{}".format(tablet))
             tablet = pd.read_csv(StringIO(tablet))
             for i in range(tablet.shape[0]):
                 path.append(tablet.iloc[[i]])
@@ -587,10 +573,10 @@ class Client:
         sstable = pd.read_csv(StringIO(content))
         path.append(sstable)
 
-        print("Root: \n",path[0].iloc[0,:2])
-        print("Tablet: \n",path[1].iloc[0,:2])
-        print("Sstable: \n",path[2].iloc[0,:2])
-        print("content: \n",path[3].iloc[0,[0]])
+        # print("Root: \n",path[0].iloc[0,:2])
+        # print("Tablet: \n",path[1].iloc[0,:2])
+        # print("Sstable: \n",path[2].iloc[0,:2])
+        # print("content: \n",path[3].iloc[0,[0]])
         return path
 
     def bloomFilter(self, fat, dfs_path, row_key):
@@ -609,16 +595,13 @@ class Client:
                 print("bloomFilter from "+host+"...",end='')
                 data_node_sock.connect((host, data_node_port))
                 table_path = dfs_path + end
-                print("step 1")
                 # 传输查询的table的路径、在B+树中的层数、行键
                 print(table_path, index1, index2, row_key)
                 request = "bloomFilter {} {} {} {}".format(table_path, index1, index2, row_key)
                 data_node_sock.send(bytes(request, encoding='utf-8'))
-                print("step 2")
                 time.sleep(0.2)  # 两次传输需要间隔一段时间，避免粘包
                 res = data_node_sock.recv(BUF_SIZE)
                 data_node_sock.close()
-                print("step 3")
                 break
             except Exception as e:
                 print(e)
@@ -757,7 +740,7 @@ class Client:
                     print(e)
                 # 接收DataNode信息，判断继续插入（循环这几步）或结束
                 res = str(res, encoding='utf-8')
-                print(res)
+                # print(res)
                 if res == 'Done':
                     break
                 else:

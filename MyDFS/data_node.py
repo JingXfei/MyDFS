@@ -240,7 +240,7 @@ class DataNode:
             request = "store {} {} {} {} {}".format(blk_path,length_data,host_str,n,mode)
             # 发送的信息包括路径、数据大小、数据流路径、你是当前第几个
             data_node_sock.send(bytes(request, encoding='utf-8'))
-            time.sleep(0.2)  # 两次传输需要间隔一段时间，避免粘包
+            time.sleep(0.3)  # 两次传输需要间隔一段时间，避免粘包
 
             # 2. 发送数据
             if content == False:
@@ -476,7 +476,7 @@ class DataNode:
         # 在TS中查询，查询操作不记录log
         if not self.tablet_server:
             self.CreateTS(table_path)
-            print("May be error for there is not a Tablet Server")
+            # print("May be error for there is not a Tablet Server")
         local_path = data_node_dir + table_path
 
         # 创建数据流
@@ -514,7 +514,7 @@ class DataNode:
         # 必然查询的是sstable，
         if not self.tablet_server:
             self.CreateTS(table_path)
-            print("May be error for there is not a Tablet Server")
+            # print("May be error for there is not a Tablet Server")
         local_path = data_node_dir + table_path
 
         # 创建数据流
@@ -568,7 +568,7 @@ class DataNode:
         # 插入到对应的tablet中 <k,v>，此时master应该已经指挥该datanode建立TS进程
         if not self.tablet_server:
             self.CreateTS(table_path)
-            print("May be error for there is not a Tablet Server")
+            # print("May be error for there is not a Tablet Server")
 
         local_path = data_node_dir + table_path
         # 接收数据
@@ -579,7 +579,6 @@ class DataNode:
             size_rec = size_rec + len(chunk_data)
             content = content + chunk_data
         content = str(content, encoding='utf-8')
-        # print("Insert content: \n",content)
         log_path = local_path + ".log"
         # 创建日志文件
         # 可能涉及的指令为：
@@ -635,13 +634,17 @@ class DataNode:
         host_names = get_hosts(host_str)
         if cmd == "store":
             length_data = os.path.getsize(local_path)
+            print(length_data, blk_path)
             self.send(blk_path, length_data, host_names[1], host_str, 1)
         elif cmd == "write_log":
-            length_data = os.path.getsize(local_path+'.log')
-            self.send(blk_path+'.log', length_data, host_names[1], host_str, 1)
+            length_data = os.path.getsize(local_path)
+            print(length_data, blk_path)
+            self.send(blk_path, length_data, host_names[1], host_str, 1)
         elif cmd == "append_log":
             content = data[2]
-            self.send(blk_path+".log", len(content), host_names[1], host_str, 1, mode = 'a', content = content)
+            length_data = len(content)
+            print(length_data, blk_path)
+            self.send(blk_path, length_data, host_names[1], host_str, 1, mode = 'a', content = content)
         else:
             print("Undefined command: ",cmd)
 
@@ -760,7 +763,6 @@ class TabletServer:
         if result == "Split":
             # 确认任务完成之后，由于分裂，存储log并在内存中删除
             self.store_log(local_path)
-            print(self.logs_done[local_path])
             del self.logs[local_path]
             del self.logs_done[local_path]
             del self.host_str[local_path]
@@ -787,7 +789,6 @@ class TabletServer:
             # 插入的对象是sstable
             temp1 = data[data.key <= row_key]
             temp2 = data[data.key > row_key]
-            print(content)
             new = pd.DataFrame({'key': [row_key], 'content': [content]})
             self.tablets[local_path] = pd.concat([temp1,new,temp2,last], ignore_index=True, sort=False)
             index = local_path.split('.')[-1][len('sstable'):]
@@ -936,7 +937,6 @@ class TabletServer:
             return ("Done",df)
 
     def store_tablet(self, local_path):
-        print('self.logs_done[local_path].shape[0]',self.logs_done[local_path].shape[0])
         if self.logs_done[local_path].shape[0] > 0:
             self.tablets[local_path].to_csv(local_path, index=False)
             self.TS_end_d.send(['store', [local_path, self.host_str[local_path]]])
