@@ -495,6 +495,9 @@ class Client:
         # row_key小于整棵树最大的last_key，则返回None；
         # 否则返回Tablet中对应的ssTablet所在一行。
         tablet = self.queryTable(fat, 0, dfs_path, row_key) # 得到tablet中对应的一行；
+        if tablet == "None":
+            print("Need waiting...")
+            return False
         tablet = str(tablet, encoding='utf-8')
         print("Next table: \n{}".format(tablet))
         tablet = pd.read_csv(StringIO(tablet))
@@ -503,6 +506,9 @@ class Client:
 
         while True:
             res,nex = self.queryTableArea(path[-1], dfs_path, row_key, row_key_2) # 得到sstable中一个区域的内容；
+            if res == "None":
+                print("Need waiting...")
+                return False
             print("Result: \n{}".format(res)) # 一次只打印一个sstable的，再将该空间重新利用
             nex = pd.read_csv(StringIO(nex))
             print(nex)
@@ -559,15 +565,18 @@ class Client:
             # 否则返回Tablet中对应的ssTablet所在一行。
             tablet = self.queryTable(fat, 0, dfs_path, row_key) # 得到tablet中对应的一行；
             tablet = str(tablet, encoding='utf-8')
-            # if tablet == "None2":
-            #     print("Bigger than Biggest, area not in this BigTable")
-            #     return path
+            if tablet == "None":
+                print("Need waiting...")
+                return path
             print("Tablet and Sstablet: \n{}".format(tablet))
             tablet = pd.read_csv(StringIO(tablet))
             for i in range(tablet.shape[0]):
                 path.append(tablet.iloc[[i]])
 
         sstable = self.queryTable(path[-1], 2, dfs_path, row_key) # 得到sstable中对应的一行；
+        if sstable == "None":
+            print("Need waiting...")
+            return path
         content = str(sstable, encoding='utf-8')
         print("Content: \n{}".format(content))
         sstable = pd.read_csv(StringIO(content))
@@ -624,33 +633,37 @@ class Client:
             ind_col = "ss_index"
 
         row = cur_table.iloc[0]
-        host_str = row['host_name']
+        host_str = row['host_name'].replace(' ', '')
         host_names = get_hosts(host_str)
 
         # 传输查询的table的路径、在B+树中的层数、行键
         table_path = dfs_path + end + '{}'.format(row[0]) # 由于目前index有些混乱，使用0去找到列index
         request = "query {} {} {}".format(table_path, cur_layer, row_key)
         ################################################################
-        # res = self.queryMaster(request)
+        query_master = "query {} {}".format(host_str, table_path)
+        status,timestamp,host = self.queryMaster(query_master)
         ################################################################
-        for host in host_names:
-            try:
-                time.sleep(0.2)
-                data_node_sock = socket.socket()
-                print("get table from "+host+"...",end='')
-                data_node_sock.connect((host, data_node_port))
+        if status == 'occupied':
+            return b'None'
+        # for host in host_names:
+        try:
+            time.sleep(0.2)
+            data_node_sock = socket.socket()
+            print("get table from "+host+"...",end='')
+            data_node_sock.connect((host, data_node_port))
 
-                data_node_sock.send(bytes(request, encoding='utf-8'))
-                time.sleep(0.2)  # 两次传输需要间隔一段时间，避免粘包
-                table = data_node_sock.recv(BUF_SIZE)
-                data_node_sock.close()
-                break
-            except:
-                data_node_sock.close()
-                print(host+" error!")
-                if host == host_names[-1]:
-                    return "All Error!"
-                continue
+            data_node_sock.send(bytes(request, encoding='utf-8'))
+            time.sleep(0.2)  # 两次传输需要间隔一段时间，避免粘包
+            table = data_node_sock.recv(BUF_SIZE)
+            data_node_sock.close()
+            self.queryOnce("finish", query_master, timestamp)
+            # break
+        except:
+            data_node_sock.close()
+            print(host+" error!")
+            if host == host_names[-1]:
+                return "All Error!"
+            # continue
         return table
 
     def queryTableArea(self, cur_table, dfs_path, row_key_begin, row_key_end = "None"):
@@ -658,41 +671,45 @@ class Client:
         # 如果end为"None"，则在datanode中按照ls的逻辑进行查询；否则找begin和end之间的数据
         res = ""
         row = cur_table.iloc[0]
-        host_str = row['host_name']
+        host_str = row['host_name'].replace(' ', '')
         host_names = get_hosts(host_str)
 
         # 传输查询的table的路径、开始行键、结束行键
         table_path = dfs_path + ".sstable{}".format(row[0]) # 同queryTable函数，由于index名称不定，暂时用0
         request = "queryArea {} {} {}".format(table_path, row_key_begin, row_key_end)
         ################################################################
-        # res = self.queryMaster(request)
+        query_master = "queryArea {} {}".format(host_str, table_path)
+        status,timestamp,host = self.queryMaster(query_master)
         ################################################################
-        for host in host_names:
-            try:
-                time.sleep(0.2)
-                data_node_sock = socket.socket()
-                print("get table from "+host+"...",end='')
-                data_node_sock.connect((host, data_node_port))
-                
-                data_node_sock.send(bytes(request, encoding='utf-8'))
-                length_data = int(data_node_sock.recv(BUF_SIZE))
-                # 接收数据
-                size_rec = 0
-                while size_rec < length_data:
-                    data = data_node_sock.recv(BUF_SIZE)
-                    size_rec = size_rec + len(data)
-                    data = str(data, encoding='utf-8')
-                    res = res+data
-                next_sstable = data_node_sock.recv(BUF_SIZE)
-                next_sstable = str(next_sstable, encoding='utf-8')
-                data_node_sock.close()
-                break
-            except:
-                data_node_sock.close()
-                print(host+" error!")
-                if host == host_names[-1]:
-                    return "All Error!"
-                continue
+        if status == 'occupied':
+            return (b'None',"")
+        # for host in host_names:
+        try:
+            time.sleep(0.2)
+            data_node_sock = socket.socket()
+            print("get table from "+host+"...",end='')
+            data_node_sock.connect((host, data_node_port))
+            
+            data_node_sock.send(bytes(request, encoding='utf-8'))
+            length_data = int(data_node_sock.recv(BUF_SIZE))
+            # 接收数据
+            size_rec = 0
+            while size_rec < length_data:
+                data = data_node_sock.recv(BUF_SIZE)
+                size_rec = size_rec + len(data)
+                data = str(data, encoding='utf-8')
+                res = res+data
+            next_sstable = data_node_sock.recv(BUF_SIZE)
+            next_sstable = str(next_sstable, encoding='utf-8')
+            data_node_sock.close()
+            self.queryOnce("finish", query_master, timestamp)
+            # break
+        except:
+            data_node_sock.close()
+            print(host+" error!")
+            if host == host_names[-1]:
+                return "All Error!"
+            # continue
         return (res,next_sstable)
 
     def insert(self, local_path, dfs_path):
@@ -715,11 +732,15 @@ class Client:
                 request = "insert {} {}".format(host_str, table_path)
                 # 和master通信获取时间戳和host；调用对应通信函数
                 ################################
+                query_master = "insert {} {}".format(host_str, table_path)
+                status,timestamp,host = self.queryMaster(query_master)
                 # timestamp, host = sendToMaster(request)
-                timestamp = str(time.time())
-                host = get_hosts(host_str)[0] # 暂时用第一个
+                # timestamp = str(time.time())
+                # host = get_hosts(host_str)[0] # 暂时用第一个
                 ################################
                 # 和host(DN)通信发送信息[dfs_path, row_key, timestamp, host_str, length_data]
+                if status == 'occupied':
+                    return b'None'
                 try:
                     data_node_sock = socket.socket()
                     print("insert to "+ host + ", insert layer: {}".format(insert_layer),end='.\n')
@@ -734,6 +755,7 @@ class Client:
                     res = data_node_sock.recv(BUF_SIZE)
                     data_node_sock.close()
                     insert_layer = insert_layer - 1
+                    self.queryOnce("finish", query_master, timestamp)
                 except Exception as e:
                     data_node_sock.close()
                     print(host+" error!")
@@ -813,7 +835,7 @@ class Client:
             print(e)
         finally:
             pass
-        return data[0], data[1]
+        return data
 
     # 用于查询master节点是否被占用，在操作之前调用，其中query为需要master记录的操作名称，为string类型
     # 返回id为master初次生成的时间戳，为string类型
@@ -822,20 +844,24 @@ class Client:
     def queryMaster(self, query):
         count = 0
         id = '-1'
+        host = ''
         status = 'occupied'
         while count < 10:
             count += 1
-            status, id = self.queryOnce('start', query, id)
+            res = self.queryOnce('start', query, id)
+            status = res[0]
+            id = res[1]
             if status == 'occupied':
                 print('System occupied, retrying in 5 sec...')
                 time.sleep(5)
             if status == 'permitted':
+                host = res[2]
                 print('System free to operate!')
                 break
         if status == 'occupied':
             print('Queueing for over 60 sec, check the status of master node') # 为什么是60s呢？
             # self.queryToMaster('cancel', query, id)
-        return id
+        return (status, id, host)
 
 class BloomFilter(object):
     def __init__(self, capacity,h1=h_1,h2=h_2):

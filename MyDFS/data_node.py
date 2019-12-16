@@ -698,7 +698,7 @@ class TabletServer:
         check_times = threading.Thread(target=TabletServer.check_times, args=(self,local_path))
         check_times.setDaemon(True)
         check_times.start()
-        return True
+        return "True"
     
     def check_tablet(self,local_path):
         # 用于检查对应tablet在磁盘的log，看读取的tablet是否是最新的。
