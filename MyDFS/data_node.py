@@ -813,7 +813,7 @@ class TabletServer:
                 self.logs_done[local_path_1] = pd.DataFrame(columns = ['timestamp', 'cmd', 'localpath', 'row_key', 'content', 'other', 'isfinish'])
 
                 host_names = get_hosts(other)
-                self.tablets[local_path_0].iloc[self.tablets[local_path_0].shape[0]] = [index1, host_names]
+                self.tablets[local_path_0].loc[self.tablets[local_path_0].shape[0]] = [index1, host_names]
                 last_key0 = self.tablets[local_path_0].iloc[-2]['key']
                 last_key1 = self.tablets[local_path_1].iloc[-2]['key']
 
@@ -849,12 +849,12 @@ class TabletServer:
             # 插入的对象是tablet，则需要删掉一行增加两行；
             # content(index, index0, index1, row_key_1)需要转换
             data = self.tablets[local_path]
-            # content = str(content, encoding='utf-8')
             temp = content.split(" ")
             index_del = temp[0]
             index0 = temp[1]
             index1 = temp[2]
-            last_key1 = temp[3]
+            row_key1 = temp[3]
+            index = local_path.split('.')[-1][len('tablet'):]
 
             if index1 == '-1':
                 # 更改原来行的last_key
@@ -864,7 +864,13 @@ class TabletServer:
                 temp1.iloc[-1,[0,2]] = [index0, row_key]
                 self.tablets[local_path] = pd.concat([temp1,temp2], ignore_index=True)
                 print("update rows 1 in tablet:\n",temp1.iloc[-1]['last_key'])
-                return ("Done", df)
+                # return ("Done", df)
+                index0 = index
+                last_key0 = row_key
+                index1 = '-1'
+                last_key1 = '-1'
+                df.loc[0] = [row_key, last_key1, index0, index1]
+                return ("Lastkey",df)
             else:
                 # 删除原来行并加入两行
                 data = self.tablets[local_path]
@@ -872,7 +878,7 @@ class TabletServer:
                 temp2 = data[data.last_key > row_key1]
                 new = temp1.iloc[[-1]]
                 new.iloc[0,[0,2]] = [index1,row_key1]
-                temp1.iloc[-1,[0,2]] = [index0, row_key0]
+                temp1.iloc[-1,[0,2]] = [index0, row_key]
                 print("new rows 1 in tablet:\n",new)
                 print("new rows 2 in tablet:\n",temp1.iloc[[-1]])
                 self.tablets[local_path] = pd.concat([temp1,new,temp2], ignore_index=True)
@@ -920,11 +926,22 @@ class TabletServer:
         else:
             # 插入的对象是root_tablet
             # content(tablet_index, host_str)需要转换为tablet_index和host_name(list)
-            # content = str(content, encoding='utf-8')
+            data = self.tablets[local_path]
             temp = content.split(" ")
             index_del = temp[0]
             index0 = temp[1]
             index1 = temp[2]
+            row_key1 = temp[3]
+
+            if index1 == '-1':
+                # 更改原来行的last_key
+                
+                temp1 = data[data.last_key <= row_key]
+                temp2 = data[data.last_key > row_key]
+                temp1.iloc[-1,[0,2]] = [index0, row_key]
+                self.tablets[local_path] = pd.concat([temp1,temp2], ignore_index=True)
+                print("update rows 1 in root:\n",temp1.iloc[-1]['last_key'])
+                return ("Done", df)
             
             temp1 = data[data.last_key < row_key]
             temp2 = data[data.last_key >= row_key]
