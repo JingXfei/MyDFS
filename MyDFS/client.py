@@ -873,13 +873,19 @@ class BloomFilter(object):
         self._size = len(self.h1_list)
     
     def add(self, msg):
-        msg_index=get_hash(msg,self.h1,self.h2)
+        a,b=get_hash(msg,self.h1,self.h2)
+        msg_index = [0,0]
+        msg_index[0] = a%len(self.h1_list)
+        msg_index[1] = b%len(self.h2_list)
         self.h1_list[msg_index[0]]=1
         self.h2_list[msg_index[1]]=1
 
     def is_exist(self, msg):
-        msg_index=get_hash(msg,self.h1,self.h2)
-        if self.h1_list[msg_index[0]]==0 and self.h2_list[msg_index[1]]==0:
+        a,b=get_hash(msg,self.h1,self.h2)
+        msg_index = [0,0]
+        msg_index[0] = a%len(self.h1_list)
+        msg_index[1] = b%len(self.h2_list)
+        if self.h1_list[msg_index[0]]==0 or self.h2_list[msg_index[1]]==0:
             return False
         else:
             return True

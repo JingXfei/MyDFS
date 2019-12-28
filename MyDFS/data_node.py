@@ -61,7 +61,7 @@ class DataNode:
     def handle(self, sock_fd, addr):
         try:
             # 获取请求方发送的指令
-            request = str(sock_fd.recv(BUF_SIZE), encoding='utf-8')
+            request = str(sock_fd.recv(256), encoding='utf-8')
             request = request.split(" ")  # 指令之间使用空白符分割
             print(request)
             
@@ -687,7 +687,7 @@ class TabletServer:
     def read_tablet(self, local_path):
         if local_path in self.tablets.keys():
             print("Has loaded to mem: \n", local_path)
-            return True
+            return "True"
         # 读取tablet顺便生成对应的log，一个0行的df
         self.tablets[local_path] = pd.read_csv(local_path)
         self.logs[local_path] = pd.DataFrame(columns = ['timestamp', 'cmd', 'localpath', 'row_key', 'content', 'other', 'isfinish'])
@@ -711,8 +711,8 @@ class TabletServer:
                     end = log_temp[log_temp.isfinish == 0].index.tolist()[-1]
                     op_df = log_temp.iloc[end+1:]
                     # 调试的时候先把这项关掉
-                    # for i in range(op_df.shape[0]):
-                    #     self.process_log(op_df.iloc[i])
+                    for i in range(op_df.shape[0]):
+                        self.process_log(op_df.iloc[i])
         else:
             print("May not exist log now!")
 
@@ -803,9 +803,9 @@ class TabletServer:
                 local_path_1 = local_path[:-l]+index1
 
                 n = self.tablets[local_path].shape[0]
-                self.tablets[local_path_0] = self.tablets[local_path].iloc[:n//2]
+                self.tablets[local_path_0] = self.tablets[local_path].iloc[:n//2].copy()
                 self.host_str[local_path_0] = self.host_str[local_path]
-                self.tablets[local_path_1] = self.tablets[local_path].iloc[n//2:]
+                self.tablets[local_path_1] = self.tablets[local_path].iloc[n//2:].copy()
                 self.host_str[local_path_1] = self.host_str[local_path]
                 self.logs[local_path_0] = pd.DataFrame(columns = ['timestamp', 'cmd', 'localpath', 'row_key', 'content', 'other', 'isfinish'])
                 self.logs[local_path_1] = pd.DataFrame(columns = ['timestamp', 'cmd', 'localpath', 'row_key', 'content', 'other', 'isfinish'])
@@ -893,9 +893,9 @@ class TabletServer:
                 local_path_1 = local_path[:-l]+index1
 
                 n = self.tablets[local_path].shape[0]
-                self.tablets[local_path_0] = self.tablets[local_path].iloc[:n//2]
+                self.tablets[local_path_0] = self.tablets[local_path].iloc[:n//2].copy()
                 self.host_str[local_path_0] = self.host_str[local_path]
-                self.tablets[local_path_1] = self.tablets[local_path].iloc[n//2:]
+                self.tablets[local_path_1] = self.tablets[local_path].iloc[n//2:].copy()
                 self.host_str[local_path_1] = self.host_str[local_path]
                 self.logs[local_path_0] = pd.DataFrame(columns = ['timestamp', 'cmd', 'localpath', 'row_key', 'content', 'other', 'isfinish'])
                 self.logs[local_path_1] = pd.DataFrame(columns = ['timestamp', 'cmd', 'localpath', 'row_key', 'content', 'other', 'isfinish'])
@@ -954,7 +954,8 @@ class TabletServer:
             return ("Done",df)
 
     def store_tablet(self, local_path):
-        if self.logs_done[local_path].shape[0] > 0:
+        # print(local_path, "shape: ", self.logs_done[local_path].shape[0])
+        if self.logs_done[local_path].shape[0] > 0 or not os.path.exists(local_path):
             self.tablets[local_path].to_csv(local_path, index=False)
             self.TS_end_d.send(['store', [local_path, self.host_str[local_path]]])
 
